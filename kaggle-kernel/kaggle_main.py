@@ -316,33 +316,82 @@ cv2.imwrite(str(freeze_path), annotated)
 print(f'[INFO] Freeze frame: {freeze_path}')
 
 # ---------------------------------------------------------------------------
-# 12. Extract clip (5-15s centered on incident frame)
+# 12. Extract annotated clip (5-15s centered on incident frame)
+#     - Before incident: raw video
+#     - From incident onward: verdict bar + offside line overlaid on every frame
+#     Encoded with mp4v first, then transcoded to H.264 via ffmpeg
+#     (Kaggle OpenCV lacks H.264 encoder but ffmpeg is pre-installed)
 # ---------------------------------------------------------------------------
-clip_path = output_dir / 'clip.mp4'
-clip_dur = 10
-clip_frames = clip_dur * FPS
-start_f = max(0, incident_frame - clip_frames // 2)
-end_f = min(TOTAL_FRAMES - 1, start_f + clip_frames - 1)
+clip_raw_path = output_dir / 'clip_raw.mp4'
+clip_path     = output_dir / 'clip.mp4'
 
-cap = cv2.VideoCapture(str(video_path))
-cap.set(cv2.CAP_PROP_POS_FRAMES, start_f)
-out = None
-for codec in ['avc1', 'H264', 'mp4v']:
-    fourcc = cv2.VideoWriter_fourcc(*codec)
-    out = cv2.VideoWriter(str(clip_path), fourcc, FPS, (W, H))
-    if out.isOpened():
-        break
+clip_dur   = 10
+clip_frames_count = clip_dur * FPS
+start_f = max(0, incident_frame - clip_frames_count // 2)
+end_f   = min(TOTAL_FRAMES - 1, start_f + clip_frames_count - 1)
+
+# ---- Build overlay template (verdict bar + offside line, no bbox — applied to all post-incident frames)
+def build_overlay(base_frame):
+    """Draw verdict bar and offside line onto a copy of base_frame."""
+    out_fr = base_frame.copy()
+    fh, fw = out_fr.shape[:2]
+
+    # Offside line
+    if INCIDENT_TYPE.lower() == 'offside' and 'defender_x' in analysis:
+        ox = int(analysis['defender_x'])
+        for y in range(0, fh, 30):
+            cv2.line(out_fr, (ox, y), (ox, min(y + 20, fh)), (0, 255, 255), 3)
+        cv2.putText(out_fr, 'OFFSIDE LINE', (ox + 5, 28),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
+
+    # Verdict bar
+    by = fh - 60
+    bcolor = (0, 0, 200) if verdict in ('OFFSIDE', 'NO-GOAL') else \
+             (0, 160, 0) if verdict in ('ONSIDE', 'GOAL') else (0, 140, 200)
+    ov = out_fr.copy()
+    cv2.rectangle(ov, (0, by), (fw, fh), bcolor, -1)
+    cv2.addWeighted(ov, 0.75, out_fr, 0.25, 0, out_fr)
+    cv2.putText(out_fr, verdict.replace('_', ' '), (16, by + 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 1.4, (255, 255, 255), 3)
+    cv2.putText(out_fr, f'{confidence*100:.0f}% confidence', (fw - 230, by + 42),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+    return out_fr
+
+# ---- Write clip with mp4v (most reliable codec on Kaggle OpenCV)
+cap2 = cv2.VideoCapture(str(video_path))
+cap2.set(cv2.CAP_PROP_POS_FRAMES, start_f)
+out2 = cv2.VideoWriter(str(clip_raw_path), cv2.VideoWriter_fourcc(*'mp4v'), FPS, (W, H))
 
 for fi in range(start_f, end_f + 1):
-    ret, fr = cap.read()
+    ret, fr = cap2.read()
     if not ret:
         break
     if fi == incident_frame:
-        fr = annotated  # use annotated frame at the incident moment
-    out.write(fr)
+        fr = annotated                  # full annotated freeze at incident moment
+    elif fi > incident_frame:
+        fr = build_overlay(fr)          # verdict bar + offside line on subsequent frames
+    out2.write(fr)
 
-cap.release()
-out.release()
+cap2.release()
+out2.release()
+print(f'[INFO] Raw clip written: {clip_raw_path}')
+
+# ---- Transcode to H.264 with ffmpeg (pre-installed on Kaggle, required for browser playback)
+import shutil
+ffmpeg_cmd = [
+    'ffmpeg', '-y', '-i', str(clip_raw_path),
+    '-vcodec', 'libx264', '-preset', 'fast', '-crf', '23',
+    '-movflags', '+faststart',   # enables streaming in browser
+    str(clip_path)
+]
+ff_result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+if ff_result.returncode == 0 and clip_path.exists():
+    clip_raw_path.unlink()          # remove the mp4v temp file
+    print(f'[INFO] H.264 clip ready: {clip_path}')
+else:
+    # ffmpeg failed — keep mp4v version as fallback
+    shutil.move(str(clip_raw_path), str(clip_path))
+    print(f'[WARN] ffmpeg failed, using mp4v fallback: {ff_result.stderr[-200:]}')
 print(f'[INFO] Clip: {clip_path}')
 
 # ---------------------------------------------------------------------------
