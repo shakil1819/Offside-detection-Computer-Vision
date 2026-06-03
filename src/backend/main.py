@@ -1,6 +1,7 @@
 """FastAPI backend for Atlético Intelligence offside/goal detection."""
 
 import sys
+import json
 import uuid
 from pathlib import Path
 from datetime import datetime
@@ -31,13 +32,18 @@ config = get_backend_config()
 # Initialize services
 job_manager = JobManager(config.JOBS_STATE_FILE)
 try:
-    kaggle_manager = KaggleManager(
-        dataset_name=config.KAGGLE_DATASET_NAME,
-        username=config.KAGGLE_USERNAME,
-        key=config.KAGGLE_KEY,
-    )
-except ValueError:
-    # Kaggle credentials not available in dev mode
+    if config.KAGGLE_USERNAME and config.KAGGLE_KEY:
+        kaggle_manager = KaggleManager(
+            dataset_name=config.KAGGLE_DATASET_NAME,
+            kernel_slug=config.KAGGLE_KERNEL_SLUG,
+            username=config.KAGGLE_USERNAME,
+            dataset_staging_dir=str(config.KAGGLE_DATASET_STAGING_DIR),
+            kernel_dir=str(config.KAGGLE_KERNEL_DIR),
+        )
+    else:
+        kaggle_manager = None
+except Exception as _e:
+    print(f'Warning: Kaggle not configured ({_e})')
     kaggle_manager = None
 
 # Create FastAPI app
@@ -385,52 +391,81 @@ def _get_simple_logger():
 
 
 async def _process_via_kaggle(job_id: str, file_path: Path) -> None:
-    """Upload to Kaggle dataset and poll kernel for completion."""
+    """Push video to Kaggle dataset, trigger kernel, poll, download results."""
     import asyncio
 
     if not kaggle_manager:
         job_manager.update_job(job_id, status='failed', error='Kaggle not configured')
         return
 
-    remote_path = f'input/{job_id}{file_path.suffix}'
-    success, msg = kaggle_manager.upload_file(str(file_path), remote_path)
+    job = job_manager.get_job(job_id)
+    incident_type = 'offside'  # TODO: accept from upload request
+    frame_number = None        # None = kernel uses middle frame
+
+    # Step 1: Push video + config to Kaggle dataset
+    job_manager.update_job(job_id, progress=15)
+    success, msg = kaggle_manager.push_job_to_dataset(
+        job_id=job_id,
+        video_path=str(file_path),
+        frame_number=frame_number or 0,
+        incident_type=incident_type,
+    )
     if not success:
-        job_manager.update_job(job_id, status='failed', error=msg)
+        job_manager.update_job(job_id, status='failed', error=f'Dataset push: {msg}')
         return
 
+    # Step 2: Push kernel (triggers a new run on T4)
     job_manager.update_job(job_id, progress=30)
-
-    config_data = {'incident_type': 'offside', 'frame': 450}
-    success, kernel_id = kaggle_manager.trigger_kernel(job_id, config_data)
+    success, kernel_ref = kaggle_manager.push_kernel()
     if not success:
-        job_manager.update_job(job_id, status='failed', error=kernel_id)
+        job_manager.update_job(job_id, status='failed', error=f'Kernel push: {kernel_ref}')
         return
 
-    job_manager.update_job(job_id, progress=50, kaggle_kernel_id=kernel_id)
+    job_manager.update_job(job_id, progress=40, kaggle_kernel_id=kernel_ref)
 
+    # Step 3: Poll until COMPLETE or ERROR
     poll_steps = config.JOB_TIMEOUT_SECONDS // config.KAGGLE_POLL_INTERVAL_SECONDS
     for i in range(poll_steps):
         await asyncio.sleep(config.KAGGLE_POLL_INTERVAL_SECONDS)
-        kernel_status, msg = kaggle_manager.get_kernel_status(kernel_id)
+        kernel_status, failure_msg = kaggle_manager.get_kernel_status()
 
-        if kernel_status == 'completed':
+        if kernel_status == 'complete':
+            # Step 4: Download /kaggle/working/ outputs
             output_dir = config.OUTPUTS_DIR / job_id
-            output_dir.mkdir(parents=True, exist_ok=True)
+            success, msg = kaggle_manager.download_results(str(output_dir))
+            if not success:
+                job_manager.update_job(job_id, status='failed', error=f'Download: {msg}')
+                return
+
+            # Parse verdict from downloaded verdict.json
+            verdict_file = output_dir / job_id / 'verdict.json'
+            verdict, confidence = 'UNCERTAIN', 0.0
+            if verdict_file.exists():
+                with open(verdict_file) as f:
+                    vdata = json.load(f)
+                verdict = vdata.get('verdict', 'UNCERTAIN')
+                confidence = vdata.get('confidence', 0.0)
+
             job_manager.update_job(
                 job_id,
                 status='completed',
                 progress=100,
-                verdict='OFFSIDE',
-                confidence=0.92,
+                verdict=verdict,
+                confidence=confidence,
                 completed_at=datetime.utcnow(),
             )
             return
 
         if kernel_status == 'failed':
-            job_manager.update_job(job_id, status='failed', error=msg)
+            logs = kaggle_manager.get_kernel_logs()
+            job_manager.update_job(
+                job_id,
+                status='failed',
+                error=failure_msg or 'Kernel execution failed',
+            )
             return
 
-        progress = min(50 + i * 40 // poll_steps, 95)
+        progress = min(40 + i * 55 // poll_steps, 95)
         job_manager.update_job(job_id, progress=progress)
 
     job_manager.update_job(

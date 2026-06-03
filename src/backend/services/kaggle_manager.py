@@ -1,167 +1,227 @@
-"""Kaggle dataset and kernel management."""
+"""
+Kaggle dataset and kernel management using the official Kaggle Python SDK.
 
-import os
+Workflow per job:
+  1. push_job_to_dataset()  — copy video + config JSON to staging dir, call
+                              dataset_create_version() to add them to Kaggle
+  2. push_kernel()          — kernels_push() triggers a new kernel run on T4
+  3. get_kernel_status()    — poll kernels_status() until COMPLETE or ERROR
+  4. download_results()     — kernels_output() fetches /kaggle/working/ contents
+"""
+
 import json
-import subprocess
+import shutil
+import os
+from datetime import datetime
 from pathlib import Path
 from typing import Tuple, Optional, Dict, Any
 
+from kagglesdk.kernels.types.kernels_enums import KernelWorkerStatus
+
+
+# Map SDK enum int values to human-readable strings
+_STATUS_MAP: Dict[int, str] = {
+    KernelWorkerStatus.QUEUED.value: 'queued',
+    KernelWorkerStatus.RUNNING.value: 'running',
+    KernelWorkerStatus.COMPLETE.value: 'complete',
+    KernelWorkerStatus.ERROR.value: 'failed',
+    KernelWorkerStatus.CANCEL_REQUESTED.value: 'running',
+    KernelWorkerStatus.CANCEL_ACKNOWLEDGED.value: 'failed',
+    KernelWorkerStatus.NEW_SCRIPT.value: 'queued',
+}
+
+# Accelerator identifier for T4 GPU
+_T4_ACCELERATOR = 'NvidiaTeslaT4'
+
 
 class KaggleManager:
-    """Wrapper around Kaggle API for dataset and kernel management."""
+    """Kaggle API wrapper for dataset uploads and kernel execution."""
 
-    def __init__(self, dataset_name: str, username: Optional[str] = None, key: Optional[str] = None):
-        """Initialize Kaggle manager.
+    def __init__(
+        self,
+        dataset_name: str,
+        kernel_slug: str,
+        username: str,
+        dataset_staging_dir: str,
+        kernel_dir: str,
+    ):
+        """Initialize and authenticate with Kaggle.
 
         Args:
-            dataset_name: Name of Kaggle dataset (e.g., 'athletic-intelligence-dataset')
-            username: Kaggle username (from env if not provided)
-            key: Kaggle API key (from env if not provided)
+            dataset_name: Kaggle dataset slug (e.g. 'athletic-intelligence-dataset')
+            kernel_slug:  Kaggle kernel slug (e.g. 'athletic-intelligence-kernel')
+            username:     Kaggle username
+            dataset_staging_dir: Local dir holding dataset-metadata.json and input/
+            kernel_dir:   Local dir holding kernel-metadata.json and kaggle_main.py
         """
-        self.dataset_name = dataset_name
-        self.username = username or os.getenv('KAGGLE_USERNAME')
-        self.key = key or os.getenv('KAGGLE_KEY')
+        from kaggle.api.kaggle_api_extended import KaggleApi
 
-        if not self.username or not self.key:
-            raise ValueError("KAGGLE_USERNAME and KAGGLE_KEY environment variables must be set")
+        self.username = username
+        self.dataset_ref = f'{username}/{dataset_name}'
+        self.kernel_ref = f'{username}/{kernel_slug}'
+        self.dataset_staging_dir = Path(dataset_staging_dir)
+        self.kernel_dir = Path(kernel_dir)
 
-        self._setup_kaggle_credentials()
+        self.api = KaggleApi()
+        self.api.authenticate()
 
-    def _setup_kaggle_credentials(self) -> None:
-        """Set up Kaggle API credentials."""
-        kaggle_dir = Path.home() / '.kaggle'
-        kaggle_dir.mkdir(exist_ok=True)
+    # ------------------------------------------------------------------
+    # Dataset operations
+    # ------------------------------------------------------------------
 
-        credentials_file = kaggle_dir / 'kaggle.json'
-        if not credentials_file.exists():
-            credentials = {
-                'username': self.username,
-                'key': self.key,
+    def push_job_to_dataset(
+        self,
+        job_id: str,
+        video_path: str,
+        frame_number: int,
+        incident_type: str,
+    ) -> Tuple[bool, str]:
+        """Stage video + config and push a new dataset version.
+
+        Copies the video and a config JSON to the local staging dir, then
+        calls dataset_create_version() so the kernel can read them.
+
+        Args:
+            job_id:        Unique job identifier
+            video_path:    Local path to the uploaded video file
+            frame_number:  Incident frame index
+            incident_type: 'offside' or 'goal'
+
+        Returns:
+            (success: bool, message: str)
+        """
+        try:
+            video_src = Path(video_path)
+            input_dir = self.dataset_staging_dir / 'input'
+            input_dir.mkdir(parents=True, exist_ok=True)
+
+            # Copy video with job_id prefix so kernel can find it
+            video_dst = input_dir / f'{job_id}{video_src.suffix}'
+            shutil.copy2(video_src, video_dst)
+
+            # Write job config JSON
+            config = {
+                'job_id': job_id,
+                'video_filename': video_dst.name,
+                'incident_type': incident_type,
+                'frame_number': frame_number,
+                'submitted_at': datetime.utcnow().isoformat(),
             }
-            with open(credentials_file, 'w') as f:
-                json.dump(credentials, f)
-            credentials_file.chmod(0o600)
+            config_path = input_dir / f'{job_id}_config.json'
+            with open(config_path, 'w') as f:
+                json.dump(config, f, indent=2)
 
-    def upload_file(self, local_path: str, remote_path: str) -> Tuple[bool, str]:
-        """Upload file to Kaggle dataset.
+            # Also write current_job.json as a stable pointer
+            current_job_path = input_dir / 'current_job.json'
+            with open(current_job_path, 'w') as f:
+                json.dump(config, f, indent=2)
 
-        Args:
-            local_path: Local file path
-            remote_path: Remote path in dataset (e.g., 'input/video.mp4')
+            # Push new dataset version (dir_mode='skip' keeps existing files)
+            self.api.dataset_create_version(
+                folder=str(self.dataset_staging_dir),
+                version_notes=f'Job {job_id} — {incident_type}',
+                quiet=True,
+                convert_to_csv=False,
+                delete_old_versions=False,
+                dir_mode='skip',
+            )
+
+            return True, f'Dataset updated with job {job_id}'
+
+        except Exception as e:
+            return False, f'Dataset push failed: {e}'
+
+    def create_dataset_if_missing(self) -> Tuple[bool, str]:
+        """Create the Kaggle dataset if it does not exist yet.
+
+        Call once during initial setup. Subsequent updates use push_job_to_dataset.
 
         Returns:
             (success: bool, message: str)
         """
         try:
-            local_file = Path(local_path)
-            if not local_file.exists():
-                return False, f"Local file not found: {local_path}"
-
-            # For MVP: Use kaggle-cli if available, else warn
-            # In production, use Python kaggle library
-            # kaggle datasets version-create -p <local_path>
-
-            # Simplified: Copy to a local staging area for now
-            # Real implementation would push to Kaggle
-            return True, f"File staged for upload: {remote_path}"
-
+            self.api.dataset_create_new(
+                folder=str(self.dataset_staging_dir),
+                public=False,
+                quiet=True,
+                convert_to_csv=False,
+                dir_mode='skip',
+            )
+            return True, f'Dataset created: {self.dataset_ref}'
         except Exception as e:
-            return False, f"Upload failed: {str(e)}"
+            err = str(e)
+            if '409' in err or 'already exists' in err.lower():
+                return True, f'Dataset already exists: {self.dataset_ref}'
+            return False, f'Dataset creation failed: {e}'
 
-    def download_file(self, remote_path: str, local_path: str) -> Tuple[bool, str]:
-        """Download file from Kaggle dataset.
+    # ------------------------------------------------------------------
+    # Kernel operations
+    # ------------------------------------------------------------------
 
-        Args:
-            remote_path: Remote path in dataset output folder
-            local_path: Where to save locally
+    def push_kernel(self) -> Tuple[bool, str]:
+        """Push the kernel to Kaggle, triggering a new run on T4 GPU.
+
+        Reads kernel-metadata.json + kaggle_main.py from self.kernel_dir.
 
         Returns:
             (success: bool, message: str)
         """
         try:
-            local_file = Path(local_path)
-            local_file.parent.mkdir(parents=True, exist_ok=True)
-
-            # Simplified for MVP
-            # Real implementation: kaggle datasets download ...
-            return True, f"File downloaded: {local_path}"
-
+            response = self.api.kernels_push(
+                folder=str(self.kernel_dir),
+                acc=_T4_ACCELERATOR,
+            )
+            ref = getattr(response, 'ref', self.kernel_ref)
+            return True, str(ref)
         except Exception as e:
-            return False, f"Download failed: {str(e)}"
+            return False, f'Kernel push failed: {e}'
 
-    def get_kernel_status(self, kernel_id: str) -> Tuple[str, str]:
-        """Get Kaggle kernel execution status.
-
-        Args:
-            kernel_id: Kaggle kernel ID
+    def get_kernel_status(self) -> Tuple[str, str]:
+        """Poll the kernel's current execution status.
 
         Returns:
             (status: str, message: str)
-            status: 'running', 'completed', 'failed', 'unknown'
+            status values: 'queued' | 'running' | 'complete' | 'failed'
         """
         try:
-            # Simplified for MVP
-            # Real implementation would use kaggle API
-            # to query kernel status by ID
-            return 'unknown', "Kernel status monitoring not yet implemented"
-
+            response = self.api.kernels_status(self.kernel_ref)
+            status_enum_val = response.status.value
+            status_str = _STATUS_MAP.get(status_enum_val, 'unknown')
+            failure_msg = response.failure_message or ''
+            return status_str, failure_msg
         except Exception as e:
-            return 'failed', f"Status check failed: {str(e)}"
+            return 'unknown', f'Status check failed: {e}'
 
-    def create_kernel_config(self, job_id: str, config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Create kernel configuration JSON.
+    def download_results(self, local_output_dir: str) -> Tuple[bool, str]:
+        """Download /kaggle/working/ outputs to local_output_dir.
 
         Args:
-            job_id: Job identifier
-            config: Configuration dict with incident_type, frame, etc.
+            local_output_dir: Where to save downloaded files
 
         Returns:
-            (success: bool, config_path: str)
+            (success: bool, message: str)
         """
         try:
-            config_data = {
-                'job_id': job_id,
-                **config,
-            }
+            output_path = Path(local_output_dir)
+            output_path.mkdir(parents=True, exist_ok=True)
 
-            # For MVP: Save locally; real version uploads to Kaggle
-            config_json = json.dumps(config_data, indent=2)
-            return True, config_json
-
+            files, _ = self.api.kernels_output(
+                kernel=self.kernel_ref,
+                path=str(output_path),
+                force=True,
+                quiet=True,
+            )
+            return True, f'Downloaded {len(files)} file(s) to {output_path}'
         except Exception as e:
-            return False, f"Config creation failed: {str(e)}"
+            return False, f'Download failed: {e}'
 
-    def trigger_kernel(self, job_id: str, config: Dict[str, Any]) -> Tuple[bool, str]:
-        """Trigger Kaggle kernel execution.
-
-        Args:
-            job_id: Job identifier
-            config: Configuration dict
+    def get_kernel_logs(self) -> str:
+        """Fetch kernel execution logs (useful for debugging failures).
 
         Returns:
-            (success: bool, kernel_id: str)
+            Log string or error message
         """
         try:
-            # For MVP: Generate pseudo kernel ID
-            # Real implementation: Create kernel and submit via Kaggle API
-            kernel_id = f"kernel-{job_id[:8]}"
-            return True, kernel_id
-
+            return self.api.kernels_logs(self.kernel_ref)
         except Exception as e:
-            return False, f"Kernel trigger failed: {str(e)}"
-
-    def list_kernel_outputs(self, kernel_id: str) -> Tuple[bool, list]:
-        """List output files from kernel execution.
-
-        Args:
-            kernel_id: Kaggle kernel ID
-
-        Returns:
-            (success: bool, files: list)
-        """
-        try:
-            # Simplified for MVP
-            return True, []
-
-        except Exception as e:
-            return False, f"List outputs failed: {str(e)}"
+            return f'Could not fetch logs: {e}'

@@ -25,6 +25,11 @@ class BackendConfig:
     KAGGLE_USERNAME: Optional[str] = os.getenv('KAGGLE_USERNAME')
     KAGGLE_KEY: Optional[str] = os.getenv('KAGGLE_KEY')
     KAGGLE_DATASET_NAME: str = os.getenv('KAGGLE_DATASET_NAME', 'athletic-intelligence-dataset')
+    KAGGLE_KERNEL_SLUG: str = os.getenv('KAGGLE_KERNEL_SLUG', 'athletic-intelligence-kernel')
+
+    # Local staging dirs for Kaggle (committed to repo, pushed to Kaggle)
+    KAGGLE_DATASET_STAGING_DIR: Path = PROJECT_ROOT / 'kaggle-dataset'
+    KAGGLE_KERNEL_DIR: Path = PROJECT_ROOT / 'kaggle-kernel'
 
     # Server Configuration
     HOST: str = os.getenv('BACKEND_HOST', '0.0.0.0')
