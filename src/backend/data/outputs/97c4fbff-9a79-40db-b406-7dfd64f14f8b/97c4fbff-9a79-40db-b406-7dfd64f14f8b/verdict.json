@@ -1,0 +1,22 @@
+{
+  "job_id": "97c4fbff-9a79-40db-b406-7dfd64f14f8b",
+  "incident_type": "offside",
+  "frame_number": 785,
+  "video_filename": "97c4fbff-9a79-40db-b406-7dfd64f14f8b.mp4",
+  "verdict": "ONSIDE",
+  "confidence": 0.5,
+  "analysis": {
+    "reason": "insufficient_detections",
+    "attackers": 0,
+    "defenders": 0
+  },
+  "players_detected": 0,
+  "attackers": 0,
+  "defenders": 0,
+  "processed_at": "2026-06-03T22:11:12.466083",
+  "output_files": {
+    "freeze": "/kaggle/working/97c4fbff-9a79-40db-b406-7dfd64f14f8b/freeze.png",
+    "clip": "/kaggle/working/97c4fbff-9a79-40db-b406-7dfd64f14f8b/clip.mp4",
+    "diagram": "/kaggle/working/97c4fbff-9a79-40db-b406-7dfd64f14f8b/diagram.png"
+  }
+}
