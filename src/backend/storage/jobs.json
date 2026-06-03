@@ -254,5 +254,50 @@
     "confidence": 1.0,
     "error": null,
     "result_files": null
+  },
+  "573ab464-ab43-4e40-aa7b-53964b3c1c3f": {
+    "job_id": "573ab464-ab43-4e40-aa7b-53964b3c1c3f",
+    "video_filename": "Offside Clip 2.mp4",
+    "status": "completed",
+    "created_at": "2026-06-03T21:35:57.490754",
+    "started_at": "2026-06-03T21:35:57.495788",
+    "completed_at": "2026-06-03T21:38:31.609044",
+    "kaggle_kernel_id": "shakil19/athletic-intelligence-offside-goal-detection",
+    "kaggle_dataset_path": null,
+    "progress": 100,
+    "verdict": "ONSIDE",
+    "confidence": 1.0,
+    "error": null,
+    "result_files": null
+  },
+  "43adf647-b2f6-43cd-9074-28bc776c7681": {
+    "job_id": "43adf647-b2f6-43cd-9074-28bc776c7681",
+    "video_filename": "Offside Video Training Clip 1.mp4",
+    "status": "completed",
+    "created_at": "2026-06-03T21:54:23.034767",
+    "started_at": "2026-06-03T21:54:23.041270",
+    "completed_at": "2026-06-03T21:56:28.047235",
+    "kaggle_kernel_id": "shakil19/athletic-intelligence-offside-goal-detection",
+    "kaggle_dataset_path": null,
+    "progress": 100,
+    "verdict": "UNCERTAIN",
+    "confidence": 0.0,
+    "error": null,
+    "result_files": null
+  },
+  "2ace7874-da0a-461d-bbf5-dc322ffcab3d": {
+    "job_id": "2ace7874-da0a-461d-bbf5-dc322ffcab3d",
+    "video_filename": "Offside Video Training Clip 1.mp4",
+    "status": "completed",
+    "created_at": "2026-06-03T22:00:57.332357",
+    "started_at": "2026-06-03T22:00:57.337863",
+    "completed_at": "2026-06-03T22:04:12.982072",
+    "kaggle_kernel_id": "shakil19/athletic-intelligence-offside-goal-detection",
+    "kaggle_dataset_path": null,
+    "progress": 100,
+    "verdict": "UNCERTAIN",
+    "confidence": 0.0,
+    "error": null,
+    "result_files": null
   }
 }
