@@ -325,10 +325,8 @@ print(f'[INFO] Freeze frame: {freeze_path}')
 clip_raw_path = output_dir / 'clip_raw.mp4'
 clip_path     = output_dir / 'clip.mp4'
 
-clip_dur   = 10
-clip_frames_count = clip_dur * FPS
-start_f = max(0, incident_frame - clip_frames_count // 2)
-end_f   = min(TOTAL_FRAMES - 1, start_f + clip_frames_count - 1)
+start_f = 0
+end_f   = TOTAL_FRAMES - 1
 
 # ---- Build overlay template (verdict bar + offside line, no bbox — applied to all post-incident frames)
 def build_overlay(base_frame):

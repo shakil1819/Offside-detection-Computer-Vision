@@ -39,7 +39,7 @@ class Config:
     TARGET_FPS = 30
     TARGET_RESOLUTION = (640, 480)
     MAX_VIDEO_SIZE_MB = 500
-    CLIP_DURATION_SEC = 10
+    CLIP_DURATION_SEC = None  # full video — no clipping
 
     # Detection
     DETECTION_MODEL = 'yolo11x-pose'

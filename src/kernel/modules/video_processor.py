@@ -74,31 +74,22 @@ class VideoProcessor:
     def extract_clip(
         self,
         output_path: str,
-        center_frame: int,
-        duration_sec: int = 10,
+        center_frame: int = 0,
+        duration_sec: int = None,
     ) -> str:
         """
-        Extract a clip (5-15 seconds) centered on a specific frame.
-
-        Tries H.264 (avc1) first for browser-compatible MP4.
-        Falls back to mp4v if H.264 encoder is not available.
+        Extract the full video as an annotated output clip.
 
         Args:
             output_path: Path to save output clip
-            center_frame: Center frame index
-            duration_sec: Duration of clip in seconds
+            center_frame: Unused — kept for API compatibility
+            duration_sec: Unused — full video is always written
 
         Returns:
             Path to output clip
         """
-        # Calculate frame range
-        clip_frames = int(duration_sec * self.fps)
-        start_frame = max(0, center_frame - clip_frames // 2)
-        end_frame = min(self.total_frames - 1, start_frame + clip_frames - 1)
-
-        # Adjust start if we hit the video end
-        if end_frame - start_frame < clip_frames:
-            start_frame = max(0, end_frame - clip_frames + 1)
+        start_frame = 0
+        end_frame = self.total_frames - 1
 
         # Try H.264 first (browser-compatible), fall back to mp4v
         codecs = ["avc1", "H264", "mp4v"]

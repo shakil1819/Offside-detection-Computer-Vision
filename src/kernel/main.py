@@ -93,11 +93,7 @@ def process_single_incident(
         # Extract clip
         logger.info(f"Extracting clip around frame {frame_number}")
         clip_path = str(output_dir / f'clip_{incident_type}.mp4')
-        video.extract_clip(
-            output_path=clip_path,
-            center_frame=frame_number,
-            duration_sec=config.CLIP_DURATION_SEC,
-        )
+        video.extract_clip(output_path=clip_path)
         result['clip_path'] = clip_path
         logger.info(f"Clip saved: {clip_path}")
 
