@@ -30,9 +30,10 @@ class APIClient {
         }
     }
 
-    async uploadVideo(file) {
+    async uploadVideo(file, incidentType = 'offside') {
         const formData = new FormData();
         formData.append('file', file);
+        formData.append('incident_type', incidentType);
 
         const response = await fetch(`${this.baseUrl}/upload`, {
             method: 'POST',

@@ -4,250 +4,229 @@
 
 class App {
     constructor() {
-        // DOM Elements
-        this.uploadSection = document.getElementById('uploadSection');
+        // Upload
+        this.uploadSection   = document.getElementById('uploadSection');
         this.progressSection = document.getElementById('progressSection');
-        this.resultsSection = document.getElementById('resultsSection');
-        this.errorSection = document.getElementById('errorSection');
-        this.historySection = document.getElementById('historySection');
+        this.uploadBtn       = document.getElementById('uploadBtn');
+        this.progressFill    = document.getElementById('progressFill');
+        this.progressText    = document.getElementById('progressText');
+        this.progressLabel   = document.getElementById('progressLabel');
+        this.progressStatus  = document.getElementById('progressStatus');
+        this.incidentType    = document.getElementById('incidentType');
 
-        this.uploadBtn = document.getElementById('uploadBtn');
-        this.progressFill = document.getElementById('progressFill');
-        this.progressText = document.getElementById('progressText');
-        this.verdictText = document.getElementById('verdictText');
-        this.verdictBadge = document.getElementById('verdictBadge');
-        this.confidenceText = document.getElementById('confidenceText');
-        this.resultVideo = document.getElementById('resultVideo');
-        this.videoSource = document.getElementById('videoSource');
-        this.downloadBtn = document.getElementById('downloadBtn');
-        this.newUploadBtn = document.getElementById('newUploadBtn');
-        this.errorText = document.getElementById('errorText');
-        this.retryBtn = document.getElementById('retryBtn');
-        this.jobsList = document.getElementById('jobsList');
+        // Results
+        this.resultsSection  = document.getElementById('resultsSection');
+        this.verdictBadge    = document.getElementById('verdictBadge');
+        this.verdictText     = document.getElementById('verdictText');
+        this.confidenceText  = document.getElementById('confidenceText');
+
+        // Media
+        this.freezeImg       = document.getElementById('freezeImg');
+        this.resultVideo     = document.getElementById('resultVideo');
+        this.videoSource     = document.getElementById('videoSource');
+        this.diagramImg      = document.getElementById('diagramImg');
+
+        // Download links
+        this.downloadVideoBtn  = document.getElementById('downloadVideoBtn');
+        this.downloadFreezeBtn = document.getElementById('downloadFreezeBtn');
+
+        // Other
+        this.errorSection   = document.getElementById('errorSection');
+        this.errorText      = document.getElementById('errorText');
+        this.retryBtn       = document.getElementById('retryBtn');
+        this.newUploadBtn   = document.getElementById('newUploadBtn');
+        this.historySection = document.getElementById('historySection');
+        this.jobsList       = document.getElementById('jobsList');
 
         this.currentJobId = null;
 
-        this.setupEventListeners();
-        this.checkHealth();
+        this._setupTabs();
+        this._setupListeners();
+        this._loadHistory();
     }
 
-    setupEventListeners() {
-        this.uploadBtn.addEventListener('click', () => this.handleUpload());
-        this.downloadBtn.addEventListener('click', () => this.handleDownload());
-        this.newUploadBtn.addEventListener('click', () => this.resetUI());
-        this.retryBtn.addEventListener('click', () => this.resetUI());
+    _setupListeners() {
+        this.uploadBtn.addEventListener('click',   () => this._handleUpload());
+        this.newUploadBtn.addEventListener('click', () => this._resetUI());
+        this.retryBtn.addEventListener('click',    () => this._resetUI());
     }
 
-    async checkHealth() {
-        try {
-            const health = await api.getHealth();
-            console.log('Backend health:', health);
-        } catch (error) {
-            console.warn('Backend not available:', error);
-        }
+    _setupTabs() {
+        document.querySelectorAll('.tab-btn').forEach(btn => {
+            btn.addEventListener('click', () => {
+                const tab = btn.dataset.tab;
+                document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                document.querySelectorAll('.tab-content').forEach(c => c.style.display = 'none');
+                btn.classList.add('active');
+                document.getElementById(`tab-${tab}`).style.display = 'block';
+
+                // Lazy-load video only when its tab is opened
+                if (tab === 'video' && this.videoSource.src !== window.location.href) {
+                    this.resultVideo.load();
+                }
+            });
+        });
     }
 
-    async handleUpload() {
+    async _handleUpload() {
         const file = uploader.getSelectedFile();
         if (!file) {
-            this.showError('Please select a video file');
+            uploader.showError('Please choose a video file first');
             return;
         }
+
+        this.uploadBtn.disabled = true;
+        this.progressSection.style.display = 'block';
+        this.resultsSection.style.display  = 'none';
+        this.errorSection.style.display    = 'none';
+        this._setProgress(5, 'Uploading...');
 
         try {
-            // Disable upload button
-            this.uploadBtn.disabled = true;
+            const resp = await api.uploadVideo(file, this.incidentType.value);
+            this.currentJobId = resp.job_id;
+            this._setProgress(15, 'Queued for processing');
 
-            // Show progress section
-            this.uploadSection.style.display = 'block';
-            this.progressSection.style.display = 'block';
-            this.resultsSection.style.display = 'none';
-            this.errorSection.style.display = 'none';
-
-            this.setProgress(5);
-
-            // Upload file
-            const response = await api.uploadVideo(file);
-            this.currentJobId = response.job_id;
-
-            this.setProgress(20);
-
-            // Start polling
             poller.start(this.currentJobId, {
-                onProgress: (status) => this.handleProgress(status),
-                onComplete: (status) => this.handleComplete(status),
-                onError: (error) => this.handlePollError(error),
+                onProgress: s => this._onProgress(s),
+                onComplete: s => this._onComplete(s),
+                onError:    e => console.warn('Poll error:', e),
             });
-
-        } catch (error) {
-            this.showError(`Upload failed: ${error.message}`);
-            this.uploadBtn.disabled = false;
+        } catch (e) {
+            this._showError(`Upload failed: ${e.message}`);
         }
     }
 
-    handleProgress(status) {
-        console.log('Job progress:', status);
-
-        // Update progress bar
-        const progress = Math.max(20, Math.min(95, status.progress || 0));
-        this.setProgress(progress);
-
-        // Update status text
-        let statusText = 'Processing';
-        if (status.status === 'uploading') {
-            statusText = 'Uploading to Kaggle';
-        } else if (status.status === 'processing') {
-            statusText = `Processing (${status.progress || 0}%)`;
+    _onProgress(status) {
+        const p = Math.max(15, Math.min(95, status.progress || 0));
+        const labels = {
+            uploading:  'Uploading to Kaggle...',
+            processing: `Running on Kaggle T4 GPU (${status.progress || 0}%)`,
+        };
+        this._setProgress(p, labels[status.status] || 'Processing...');
+        if (this.progressStatus) {
+            this.progressStatus.textContent = status.status;
         }
-        document.querySelector('.progress-section h3').textContent = statusText + '...';
     }
 
-    handleComplete(status) {
-        console.log('Job complete:', status);
-
+    _onComplete(status) {
         if (status.status === 'failed') {
-            this.showError(status.error || 'Processing failed');
-            this.uploadBtn.disabled = false;
+            this._showError(status.error || 'Processing failed on Kaggle kernel');
             return;
         }
 
-        this.setProgress(100);
-
-        // Hide progress, show results
+        this._setProgress(100, 'Complete');
         this.progressSection.style.display = 'none';
-        this.resultsSection.style.display = 'block';
+        this.resultsSection.style.display  = 'block';
 
-        // Display verdict
-        this.displayVerdict(status);
-
-        // Load video
-        this.loadResultVideo(status.job_id);
-
-        // Store job ID
-        this.currentJobId = status.job_id;
-
-        // Reload history
-        this.loadJobHistory();
+        this._displayVerdict(status);
+        this._loadOutputs(status.job_id);
+        this._loadHistory();
     }
 
-    handlePollError(error) {
-        console.error('Poll error:', error);
-        // Continue polling even on error
-    }
-
-    displayVerdict(status) {
-        const verdict = status.verdict || 'UNCERTAIN';
+    _displayVerdict(status) {
+        const verdict    = status.verdict || 'UNCERTAIN';
         const confidence = status.confidence || 0;
 
-        // Set verdict text
-        this.verdictText.textContent = verdict;
-        this.confidenceText.textContent = `${(confidence * 100).toFixed(0)}% confidence`;
+        this.verdictText.textContent     = verdict.replace('_', ' ');
+        this.confidenceText.textContent  = `${(confidence * 100).toFixed(0)}% confidence`;
 
-        // Color code badge
         this.verdictBadge.className = 'verdict-badge';
-        if (verdict.includes('OFFSIDE') || verdict.includes('NO-GOAL')) {
+        if (['OFFSIDE', 'NO-GOAL', 'NO_GOAL'].includes(verdict)) {
             this.verdictBadge.classList.add('offside');
-        } else if (verdict.includes('ONSIDE') || verdict.includes('GOAL')) {
+        } else if (['ONSIDE', 'GOAL'].includes(verdict)) {
             this.verdictBadge.classList.add('onside');
         } else {
             this.verdictBadge.classList.add('uncertain');
         }
     }
 
-    loadResultVideo(jobId) {
-        // Construct video URL
-        const videoUrl = `/download/${jobId}?format=video`;
+    _loadOutputs(jobId) {
+        const base = `/download/${jobId}`;
+
+        // Freeze frame — show immediately in active tab
+        const freezeUrl = `${base}?format=freeze`;
+        this.freezeImg.src = freezeUrl;
+        this.freezeImg.onerror = () => {
+            document.getElementById('tab-freeze').innerHTML =
+                '<p style="color:#888;padding:20px;">Freeze frame not available</p>';
+        };
+
+        // Diagram
+        this.diagramImg.src = `${base}?format=diagram`;
+        this.diagramImg.onerror = () => {
+            document.getElementById('tab-diagram').innerHTML =
+                '<p style="color:#888;padding:20px;">Diagram not available</p>';
+        };
+
+        // Video — set src but don't load until tab is opened
+        const videoUrl = `${base}?format=video`;
         this.videoSource.src = videoUrl;
-        this.resultVideo.load();
+
+        // Download buttons
+        this.downloadVideoBtn.href  = videoUrl;
+        this.downloadFreezeBtn.href = freezeUrl;
     }
 
-    handleDownload() {
-        if (!this.currentJobId) {
-            this.showError('No job selected');
-            return;
-        }
-
-        api.downloadResults(this.currentJobId, 'video');
+    _setProgress(pct, label = '') {
+        this.progressFill.style.width   = `${pct}%`;
+        this.progressText.textContent   = `${pct}%`;
+        if (label && this.progressLabel) this.progressLabel.textContent = label;
     }
 
-    setProgress(percent) {
-        const fill = this.progressFill;
-        fill.style.width = `${percent}%`;
-
-        const text = this.progressText;
-        text.textContent = `${percent}%`;
-    }
-
-    showError(message) {
-        this.errorSection.style.display = 'block';
-        this.errorText.textContent = message;
-        this.uploadBtn.disabled = false;
-    }
-
-    resetUI() {
-        uploader.reset();
-        this.uploadSection.style.display = 'block';
-        this.progressSection.style.display = 'none';
+    _showError(msg) {
+        this.errorSection.style.display  = 'block';
         this.resultsSection.style.display = 'none';
-        this.errorSection.style.display = 'none';
+        this.errorText.textContent = msg;
         this.uploadBtn.disabled = false;
-        this.setProgress(0);
-        this.currentJobId = null;
-
-        poller.stop();
     }
 
-    async loadJobHistory() {
-        try {
-            const response = await api.listJobs(10);
-            const jobs = response.jobs || [];
+    _resetUI() {
+        uploader.reset();
+        poller.stop();
+        this.uploadBtn.disabled        = false;
+        this.progressSection.style.display = 'none';
+        this.resultsSection.style.display  = 'none';
+        this.errorSection.style.display    = 'none';
+        this._setProgress(0, 'Processing on Kaggle T4 GPU...');
+        this.currentJobId = null;
+    }
 
-            if (jobs.length === 0) {
-                this.historySection.style.display = 'none';
-                return;
-            }
+    async _loadHistory() {
+        try {
+            const resp = await api.listJobs(8);
+            const jobs  = (resp.jobs || []).filter(j => j.status === 'completed' || j.status === 'failed');
+            if (!jobs.length) { this.historySection.style.display = 'none'; return; }
 
             this.historySection.style.display = 'block';
-            this.jobsList.innerHTML = '';
-
-            jobs.forEach(job => {
-                const jobEl = this.createJobElement(job);
-                this.jobsList.appendChild(jobEl);
-            });
-
-        } catch (error) {
-            console.error('Failed to load history:', error);
+            this.jobsList.innerHTML = jobs.map(j => {
+                const icon    = j.status === 'completed' ? '✅' : '❌';
+                const verdict = j.verdict || '—';
+                const conf    = j.confidence != null ? `${(j.confidence * 100).toFixed(0)}%` : '';
+                const date    = new Date(j.created_at).toLocaleString();
+                return `
+                    <div class="job-item" onclick="app._reloadJob('${j.job_id}')">
+                        <div>${icon} <strong>${verdict}</strong> ${conf}</div>
+                        <div class="job-id">${j.job_id.slice(0,12)}</div>
+                        <div style="font-size:0.8rem;color:#888;">${date}</div>
+                    </div>`;
+            }).join('');
+        } catch (e) {
+            console.warn('History load failed:', e);
         }
     }
 
-    createJobElement(job) {
-        const div = document.createElement('div');
-        div.className = 'job-item';
-
-        const dateStr = new Date(job.created_at).toLocaleString();
-        const verdict = job.verdict || '-';
-        const confidence = job.confidence ? `${(job.confidence * 100).toFixed(0)}%` : '-';
-
-        div.innerHTML = `
-            <div>
-                <div class="job-id">${job.job_id.substring(0, 12)}</div>
-                <div style="font-size: 0.9rem; color: #6b7280;">${dateStr}</div>
-            </div>
-            <div>
-                <div>${job.video_filename}</div>
-                <div><span class="job-status ${job.status}">${job.status}</span></div>
-            </div>
-            <div class="job-verdict">
-                <div style="font-size: 1.1rem; font-weight: 700;">${verdict}</div>
-                <div style="font-size: 0.85rem; color: #6b7280;">${confidence}</div>
-            </div>
-        `;
-
-        return div;
+    _reloadJob(jobId) {
+        // Re-display results for a past completed job
+        api.getStatus(jobId).then(status => {
+            if (status.status !== 'completed') return;
+            this.currentJobId = jobId;
+            this.progressSection.style.display = 'none';
+            this.resultsSection.style.display  = 'block';
+            this.errorSection.style.display    = 'none';
+            this._displayVerdict(status);
+            this._loadOutputs(jobId);
+        });
     }
 }
 
-// Initialize app when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.app = new App();
-});
+document.addEventListener('DOMContentLoaded', () => { window.app = new App(); });

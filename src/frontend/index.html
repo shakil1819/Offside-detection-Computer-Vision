@@ -17,59 +17,76 @@
         <!-- Upload Section -->
         <section id="uploadSection" class="section upload-section">
             <h2>Upload Video</h2>
-            <div class="upload-box">
-                <input
-                    type="file"
-                    id="videoInput"
-                    accept="video/*"
-                    style="display: none;">
+            <div class="upload-box" id="uploadBox">
+                <input type="file" id="videoInput" accept="video/*" style="display: none;">
                 <button id="uploadBtn" class="btn btn-primary btn-large">
                     📹 Choose Video
                 </button>
                 <p id="fileName" class="file-name"></p>
-                <p class="help-text">Max 500 MB • Supported: MP4, AVI, MOV, MKV</p>
+                <p class="help-text">Max 500 MB &bull; MP4, AVI, MOV, MKV</p>
+
+                <!-- Incident type selector -->
+                <div class="incident-selector">
+                    <label>Incident type:</label>
+                    <select id="incidentType">
+                        <option value="offside">Offside</option>
+                        <option value="goal">Goal / No-Goal</option>
+                    </select>
+                </div>
             </div>
 
-            <!-- Progress Section -->
+            <!-- Progress -->
             <div id="progressSection" style="display: none;" class="progress-section">
-                <h3>Processing...</h3>
+                <h3 id="progressLabel">Processing on Kaggle T4 GPU...</h3>
                 <div class="progress-bar">
                     <div id="progressFill" class="progress-fill"></div>
                 </div>
                 <p id="progressText" class="progress-text">0%</p>
+                <p id="progressStatus" class="progress-status"></p>
             </div>
         </section>
 
         <!-- Results Section -->
         <section id="resultsSection" class="section results-section" style="display: none;">
-            <h2>Results</h2>
+            <h2>Analysis Results</h2>
 
-            <!-- Verdict Card -->
+            <!-- Verdict -->
             <div class="verdict-card">
-                <h3>Incident Analysis</h3>
                 <div class="verdict-badge" id="verdictBadge">
                     <span id="verdictText">OFFSIDE</span>
-                    <span id="confidenceText" class="confidence">(92% confidence)</span>
                 </div>
+                <span id="confidenceText" class="confidence"></span>
             </div>
 
-            <!-- Video Player -->
-            <div class="video-container">
-                <h3>Processed Video</h3>
-                <video id="resultVideo" controls>
-                    <source id="videoSource" type="video/mp4">
-                    Your browser does not support the video tag.
+            <!-- Tabs -->
+            <div class="tabs">
+                <button class="tab-btn active" data-tab="freeze">Freeze Frame</button>
+                <button class="tab-btn" data-tab="video">Clip</button>
+                <button class="tab-btn" data-tab="diagram">Top-Down Diagram</button>
+            </div>
+
+            <!-- Freeze frame (annotated PNG — the primary output) -->
+            <div id="tab-freeze" class="tab-content active">
+                <img id="freezeImg" src="" alt="Annotated freeze frame" style="width:100%; border-radius:8px;">
+            </div>
+
+            <!-- Video clip -->
+            <div id="tab-video" class="tab-content" style="display:none;">
+                <video id="resultVideo" controls style="width:100%;">
+                    <source id="videoSource" src="" type="video/mp4">
                 </video>
+            </div>
+
+            <!-- Top-down diagram -->
+            <div id="tab-diagram" class="tab-content" style="display:none;">
+                <img id="diagramImg" src="" alt="Top-down positional diagram" style="width:100%; border-radius:8px;">
             </div>
 
             <!-- Actions -->
             <div class="actions">
-                <button id="downloadBtn" class="btn btn-secondary">
-                    📥 Download Results
-                </button>
-                <button id="newUploadBtn" class="btn btn-primary">
-                    📹 Process Another Video
-                </button>
+                <a id="downloadVideoBtn" class="btn btn-secondary" download>📥 Download Clip</a>
+                <a id="downloadFreezeBtn" class="btn btn-secondary" download>🖼 Download Freeze</a>
+                <button id="newUploadBtn" class="btn btn-primary">📹 New Video</button>
             </div>
         </section>
 
@@ -78,22 +95,17 @@
             <h2>Error</h2>
             <div class="error-box">
                 <p id="errorText"></p>
-                <button id="retryBtn" class="btn btn-primary">
-                    🔄 Try Again
-                </button>
+                <button id="retryBtn" class="btn btn-primary">🔄 Try Again</button>
             </div>
         </section>
 
         <!-- Job History -->
         <section id="historySection" class="section history-section" style="display: none;">
             <h2>Recent Jobs</h2>
-            <div id="jobsList" class="jobs-list">
-                <!-- Jobs populated by JavaScript -->
-            </div>
+            <div id="jobsList" class="jobs-list"></div>
         </section>
     </div>
 
-    <!-- Scripts -->
     <script src="js/api.js"></script>
     <script src="js/uploader.js"></script>
     <script src="js/status-poller.js"></script>

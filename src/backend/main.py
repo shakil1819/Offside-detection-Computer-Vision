@@ -204,25 +204,45 @@ async def download_results(job_id: str, format: str = 'video'):
             detail=f'Job not ready: status={job.status}',
         )
 
-    # Get output files
+    # Kaggle kernels_output() downloads into {output_dir}/{job_id}/ subdir.
+    # Try both paths: flat (local processing) and nested (Kaggle download).
     output_dir = config.OUTPUTS_DIR / job_id
-    if not output_dir.exists():
-        raise HTTPException(status_code=404, detail='Output files not found')
+    nested_dir = output_dir / job_id   # Kaggle download structure
+
+    def find_file(filename: str) -> Path:
+        """Search nested then flat output directory."""
+        for d in [nested_dir, output_dir]:
+            p = d / filename
+            if p.exists():
+                return p
+        return None
 
     if format == 'video':
-        clip_path = output_dir / 'clip.mp4'
-        if not clip_path.exists():
-            raise HTTPException(status_code=404, detail='Clip file not found')
-        return FileResponse(clip_path, media_type='video/mp4')
+        clip = find_file('clip.mp4')
+        if not clip:
+            raise HTTPException(status_code=404, detail='Clip not found — kernel may not have produced it')
+        return FileResponse(str(clip), media_type='video/mp4', filename='clip.mp4')
+
+    elif format == 'freeze':
+        img = find_file('freeze.png')
+        if not img:
+            raise HTTPException(status_code=404, detail='Freeze frame not found')
+        return FileResponse(str(img), media_type='image/png', filename='freeze.png')
+
+    elif format == 'diagram':
+        img = find_file('diagram.png')
+        if not img:
+            raise HTTPException(status_code=404, detail='Diagram not found')
+        return FileResponse(str(img), media_type='image/png', filename='diagram.png')
 
     elif format == 'json':
-        verdict_path = output_dir / 'verdict.json'
-        if not verdict_path.exists():
-            raise HTTPException(status_code=404, detail='Verdict file not found')
-        return FileResponse(verdict_path, media_type='application/json')
+        vf = find_file('verdict.json')
+        if not vf:
+            raise HTTPException(status_code=404, detail='Verdict JSON not found')
+        return FileResponse(str(vf), media_type='application/json', filename='verdict.json')
 
     else:
-        raise HTTPException(status_code=400, detail=f'Invalid format: {format}')
+        raise HTTPException(status_code=400, detail=f'Invalid format: {format}. Use: video, freeze, diagram, json')
 
 
 @app.get('/jobs', tags=['jobs'])
