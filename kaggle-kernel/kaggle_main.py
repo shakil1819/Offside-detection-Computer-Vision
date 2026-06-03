@@ -222,10 +222,18 @@ confidence = 0.0
 analysis = {}
 
 if INCIDENT_TYPE.lower() == 'offside':
-    if len(attackers) >= 1 and len(defenders) >= 2:
+    if not attackers or not defenders:
+        # Cannot prove offside — FIFA benefit-of-the-doubt rule: call is ONSIDE
+        verdict = 'ONSIDE'
+        confidence = 0.5
+        analysis = {'reason': 'insufficient_detections', 'attackers': len(attackers), 'defenders': len(defenders)}
+        print(f'[WARN] Insufficient detections (ATK={len(attackers)} DEF={len(defenders)}) — defaulting to ONSIDE')
+    else:
         defenders_sorted = sorted(defenders, key=get_foot_x, reverse=True)
-        second_last = defenders_sorted[1]
-        defender_x = get_foot_x(second_last)
+        # Use second-last defender; fall back to last if only one detected
+        ref_defender = defenders_sorted[1] if len(defenders) >= 2 else defenders_sorted[0]
+        defender_x = get_foot_x(ref_defender)
+
         attackers_sorted = sorted(attackers, key=get_foot_x, reverse=True)
         most_advanced = attackers_sorted[0]
         attacker_x = get_foot_x(most_advanced)
@@ -237,12 +245,9 @@ if INCIDENT_TYPE.lower() == 'offside':
         analysis = {
             'attacker_x': attacker_x, 'defender_x': defender_x,
             'distance': distance, 'is_offside': is_offside,
+            'used_last_defender_only': len(defenders) < 2,
         }
-        print(f'[INFO] Offside: attacker_x={attacker_x:.1f} defender_x={defender_x:.1f}')
-    else:
-        verdict = 'UNCERTAIN'
-        confidence = 0.0
-        print(f'[WARN] Not enough players for offside call')
+        print(f'[INFO] {verdict}: attacker_x={attacker_x:.1f} defender_x={defender_x:.1f} gap={distance:.1f}px')
 
 elif INCIDENT_TYPE.lower() == 'goal':
     # Simple ball-in-goal heuristic (ball detection via HSV)
@@ -270,8 +275,10 @@ elif INCIDENT_TYPE.lower() == 'goal':
         confidence = 0.80
         analysis = {'ball_x': float(ball_x), 'goal_line_x': float(goal_line_x)}
     else:
-        verdict = 'UNCERTAIN'
-        confidence = 0.0
+        # Ball not detected — benefit of the doubt: NO-GOAL (can't prove it crossed)
+        verdict = 'NO-GOAL'
+        confidence = 0.5
+        analysis = {'reason': 'ball_not_detected'}
 
 print(f'[RESULT] {verdict} ({confidence:.0%} confidence)')
 

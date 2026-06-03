@@ -139,16 +139,20 @@ class OffsideAnalyzer:
             - confidence: Confidence score (0-1)
             - analysis_data: Dict with positions for visualization
         """
-        if not attackers or not defenders:
-            return "UNCERTAIN", 0.0, {}
+        # FIFA rule: if offside cannot be proven, the call is ONSIDE.
+        # Benefit of the doubt always goes to the attacker.
+        if not attackers:
+            return "ONSIDE", 0.5, {"reason": "no_attackers_detected"}
 
-        if len(defenders) < 2:
-            # Not enough defenders for proper offside call
-            return "UNCERTAIN", 0.3, {}
+        if not defenders:
+            return "ONSIDE", 0.5, {"reason": "no_defenders_detected"}
 
-        # Sort defenders by x-coordinate (goal proximity)
+        # Sort defenders by x-coordinate (goal proximity, highest x = closest to goal)
         defenders_sorted = sorted(defenders, key=lambda p: OffsideAnalyzer.get_foot_x(p), reverse=True)
-        second_last_defender = defenders_sorted[1]
+
+        # Use second-last defender when available; fall back to last defender
+        # (covers the case where only the goalkeeper is detected)
+        second_last_defender = defenders_sorted[1] if len(defenders) >= 2 else defenders_sorted[0]
         defender_x = OffsideAnalyzer.get_foot_x(second_last_defender)
 
         # Find most advanced attacker

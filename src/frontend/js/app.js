@@ -133,10 +133,8 @@ class App {
         this.verdictBadge.className = 'verdict-badge';
         if (['OFFSIDE', 'NO-GOAL', 'NO_GOAL'].includes(verdict)) {
             this.verdictBadge.classList.add('offside');
-        } else if (['ONSIDE', 'GOAL'].includes(verdict)) {
-            this.verdictBadge.classList.add('onside');
         } else {
-            this.verdictBadge.classList.add('uncertain');
+            this.verdictBadge.classList.add('onside');   // ONSIDE or GOAL
         }
     }
 

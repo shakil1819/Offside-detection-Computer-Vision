@@ -30,7 +30,8 @@ class GoalAnalyzer:
             - analysis_data: Dict with details for visualization
         """
         if ball is None:
-            return "UNCERTAIN", 0.0, {}
+            # Cannot prove goal — benefit of the doubt: NO-GOAL
+            return "NO-GOAL", 0.5, {"reason": "ball_not_detected"}
 
         ball_x = ball.center[0]
 

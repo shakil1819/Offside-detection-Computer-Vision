@@ -253,10 +253,6 @@ html, body {
     color: #991b1b;
 }
 
-.verdict-badge.uncertain {
-    background-color: #fef3c7;
-    color: #92400e;
-}
 
 .confidence {
     display: block;
