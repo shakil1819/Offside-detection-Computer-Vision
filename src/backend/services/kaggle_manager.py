@@ -61,6 +61,7 @@ class KaggleManager:
             project_root:        Project root for syncing src/kernel/ (auto-detected)
         """
         from kaggle.api.kaggle_api_extended import KaggleApi
+        import os
 
         self.username = username
         self.dataset_ref = f'{username}/{dataset_name}'
@@ -68,6 +69,14 @@ class KaggleManager:
         self.dataset_staging_dir = Path(dataset_staging_dir)
         self.kernel_dir = Path(kernel_dir)
         self.project_root = Path(project_root) if project_root else Path(kernel_dir).parents[1]
+
+        # SDK v2 auth routing:
+        # - KGAT_xxx tokens → KAGGLE_API_TOKEN (OAuth access token path)
+        # - Legacy 32-char hex keys → KAGGLE_USERNAME + KAGGLE_KEY
+        key = os.getenv('KAGGLE_KEY', '')
+        if key.startswith('KGAT_'):
+            os.environ['KAGGLE_API_TOKEN'] = key
+            log.debug('KGAT token detected — set KAGGLE_API_TOKEN for SDK v2 auth')
 
         self.api = KaggleApi()
         self.api.authenticate()
@@ -104,42 +113,34 @@ class KaggleManager:
         log.info('Synced src/kernel/ → staging (%d files)', sum(1 for _ in dst.rglob('*')))
 
     def _clean_old_input_files(self) -> None:
-        """Remove prior job's video and config from staging input/ dir.
+        """Remove prior job's video from the staging root dir.
 
-        Keeps dataset staging lean — only the current job's files.
-        current_job.json is overwritten (not deleted) so the kernel always
-        reads the latest job.
+        Files are kept flat at staging root (no subdirs).
+        current_job.json is overwritten on each push, not deleted.
         """
-        input_dir = self.dataset_staging_dir / 'input'
-        if not input_dir.exists():
-            return
-
         video_exts = {'.mp4', '.avi', '.mov', '.mkv'}
-        for f in list(input_dir.iterdir()):
-            if f.suffix.lower() in video_exts:
+        for f in self.dataset_staging_dir.iterdir():
+            if f.is_file() and f.suffix.lower() in video_exts:
                 f.unlink()
                 log.debug('Removed old video from staging: %s', f.name)
-            elif f.name.endswith('_config.json') and f.name != 'current_job.json':
-                f.unlink()
-                log.debug('Removed old config from staging: %s', f.name)
 
     def _ensure_dataset_exists(self) -> None:
-        """Create the Kaggle dataset if it doesn't exist yet (first run only)."""
+        """Create the Kaggle dataset (first run). Ignored if already exists."""
         try:
             self.api.dataset_create_new(
                 folder=str(self.dataset_staging_dir),
                 public=False,
                 quiet=True,
                 convert_to_csv=False,
-                dir_mode='skip',
+                dir_mode='overwrite',
             )
             log.info('Dataset created: %s', self.dataset_ref)
         except Exception as e:
             err = str(e)
-            if '409' in err or 'already exists' in err.lower():
+            if any(code in err for code in ('409', 'already exists', 'Conflict')):
                 log.debug('Dataset already exists: %s', self.dataset_ref)
             else:
-                raise
+                raise RuntimeError(f'Dataset creation failed: {e}') from e
 
     # ------------------------------------------------------------------
     # Dataset operations
@@ -170,19 +171,14 @@ class KaggleManager:
             (success: bool, message: str)
         """
         try:
-            # Step 1: Sync source code
-            log.info('[%s] Syncing src/kernel/ to dataset staging', job_id)
-            self._sync_source_to_staging()
-
-            # Step 2: Clean prior input files
+            # Step 1: Clean prior input files (video only)
             self._clean_old_input_files()
 
-            # Step 3: Stage this job's files
+            # Step 3: Stage files flat at staging root (no subdirectories)
+            # Kaggle's dataset_create_new/version skip subdirs by default.
+            # Putting files at root avoids the issue entirely.
             video_src = Path(video_path)
-            input_dir = self.dataset_staging_dir / 'input'
-            input_dir.mkdir(parents=True, exist_ok=True)
-
-            video_dst = input_dir / f'{job_id}{video_src.suffix}'
+            video_dst = self.dataset_staging_dir / f'{job_id}{video_src.suffix}'
             shutil.copy2(video_src, video_dst)
             log.info('[%s] Staged video: %s', job_id, video_dst.name)
 
@@ -190,44 +186,32 @@ class KaggleManager:
                 'job_id': job_id,
                 'video_filename': video_dst.name,
                 'incident_type': incident_type,
-                'frame_number': frame_number,   # None = kernel picks middle frame
+                'frame_number': frame_number,
                 'submitted_at': datetime.utcnow().isoformat(),
             }
 
-            # Per-job config file
-            config_file = input_dir / f'{job_id}_config.json'
-            with open(config_file, 'w') as f:
-                json.dump(job_config, f, indent=2)
-
-            # Stable pointer (overwrite='overwrite' ensures kernel always sees current job)
-            current_job_file = input_dir / 'current_job.json'
+            # Per-job config (stable filename so kernel always reads current job)
+            current_job_file = self.dataset_staging_dir / 'current_job.json'
             with open(current_job_file, 'w') as f:
                 json.dump(job_config, f, indent=2)
 
-            # Step 4: Push dataset version (dir_mode='overwrite' updates current_job.json)
+            # Step 4: Push dataset version
             log.info('[%s] Pushing dataset version to Kaggle', job_id)
             try:
                 self.api.dataset_create_version(
                     folder=str(self.dataset_staging_dir),
-                    version_notes=f'Job {job_id[:8]} — {incident_type}',
+                    version_notes=f'Job {job_id[:8]} - {incident_type}',
                     quiet=True,
                     convert_to_csv=False,
                     delete_old_versions=False,
-                    dir_mode='overwrite',   # Ensure current_job.json is always updated
+                    dir_mode='skip',   # flat files only; no subdirs in staging root
                 )
             except Exception as e:
-                if '404' in str(e) or 'not found' in str(e).lower():
-                    # Dataset doesn't exist yet — create then version
-                    log.info('[%s] Dataset not found, creating...', job_id)
+                err = str(e)
+                if any(code in err for code in ('403', '404', 'not found', 'Forbidden')):
+                    log.info('[%s] Dataset does not exist, creating it first...', job_id)
                     self._ensure_dataset_exists()
-                    self.api.dataset_create_version(
-                        folder=str(self.dataset_staging_dir),
-                        version_notes=f'Job {job_id[:8]} — {incident_type} (initial)',
-                        quiet=True,
-                        convert_to_csv=False,
-                        delete_old_versions=False,
-                        dir_mode='overwrite',
-                    )
+                    # dataset_create_new uploads all root-level files including video
                 else:
                     raise
 
@@ -257,22 +241,28 @@ class KaggleManager:
                 folder=str(self.kernel_dir),
                 acc=_T4_ACCELERATOR,
             )
-            ref = getattr(response, 'ref', self.kernel_ref)
+            # response.ref is '/code/owner/slug' — strip the URL prefix
+            raw_ref = getattr(response, 'ref', '') or ''
+            ref = raw_ref.removeprefix('/code/') or self.kernel_ref
             log.info('[%s] Kernel pushed: %s', job_id, ref)
             return True, str(ref)
         except Exception as e:
             log.error('[%s] Kernel push failed: %s', job_id, e)
             return False, f'Kernel push failed: {e}'
 
-    def get_kernel_status(self) -> Tuple[str, str]:
+    def get_kernel_status(self, kernel_ref: Optional[str] = None) -> Tuple[str, str]:
         """Poll kernel execution status.
+
+        Args:
+            kernel_ref: Override the default kernel ref (e.g. from push response)
 
         Returns:
             (status: str, failure_message: str)
             status: 'queued' | 'running' | 'complete' | 'failed' | 'unknown'
         """
+        ref = kernel_ref or self.kernel_ref
         try:
-            response = self.api.kernels_status(self.kernel_ref)
+            response = self.api.kernels_status(ref)
             status_str = _STATUS_MAP.get(response.status.value, 'unknown')
             return status_str, response.failure_message or ''
         except Exception as e:
@@ -291,12 +281,19 @@ class KaggleManager:
             output_path = Path(local_output_dir)
             output_path.mkdir(parents=True, exist_ok=True)
 
-            files, _ = self.api.kernels_output(
-                kernel=self.kernel_ref,
-                path=str(output_path),
-                force=True,
-                quiet=True,
-            )
+            files = []
+            try:
+                files, _ = self.api.kernels_output(
+                    kernel=self.kernel_ref,
+                    path=str(output_path),
+                    force=True,
+                    quiet=True,
+                )
+            except UnicodeEncodeError:
+                # Windows CP1252: SDK progress print fails but files still download.
+                # Scan the output dir for what was actually saved.
+                files = [str(p) for p in output_path.rglob('*') if p.is_file()]
+                log.warning('Encoding error in SDK output, but %d file(s) saved', len(files))
             log.info('Downloaded %d file(s) to %s', len(files), output_path)
             return True, f'Downloaded {len(files)} file(s)'
         except Exception as e:

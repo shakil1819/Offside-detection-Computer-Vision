@@ -1,12 +1,12 @@
 {
-  "id": "shakil19/athletic-intelligence-kernel",
+  "id": "shakil19/athletic-intelligence-offside-goal-detection",
   "title": "Athletic Intelligence - Offside & Goal Detection",
   "code_file": "kaggle_main.py",
   "language": "python",
   "kernel_type": "script",
   "is_private": true,
   "enable_gpu": true,
-  "enable_internet": false,
+  "enable_internet": true,
   "enable_tpu": false,
   "dataset_sources": [
     "shakil19/athletic-intelligence-dataset"

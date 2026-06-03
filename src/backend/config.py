@@ -37,8 +37,8 @@ class BackendConfig:
     DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
 
     # Job Configuration
-    JOB_TIMEOUT_SECONDS: int = 300  # 5 minutes total timeout
-    KAGGLE_POLL_INTERVAL_SECONDS: int = 5  # Check Kaggle status every 5s
+    JOB_TIMEOUT_SECONDS: int = 1800   # 30 min — Kaggle kernels queue + run can take 15 min
+    KAGGLE_POLL_INTERVAL_SECONDS: int = 30  # Poll every 30s (kernel state changes slowly)
     MAX_RETRIES: int = 3
     RETRY_DELAY_SECONDS: int = 2
 

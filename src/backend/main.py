@@ -420,56 +420,76 @@ async def _process_via_kaggle(
     incident_type: str = 'offside',
     frame_number: Optional[int] = None,
 ) -> None:
-    """Push video to Kaggle dataset, trigger kernel, poll, download results."""
+    """Push video to Kaggle, trigger kernel, poll, download results.
+
+    All blocking Kaggle SDK calls run in executor threads so the
+    event loop stays responsive to /status polling during the wait.
+    """
     import asyncio
 
     if not kaggle_manager:
         job_manager.update_job(job_id, status='failed', error='Kaggle not configured')
         return
 
-    # Step 1: Sync src/kernel/, stage video + config, push dataset version
+    loop = asyncio.get_event_loop()
+
+    # Step 1: Push dataset (blocking SDK call — run in thread)
     job_manager.update_job(job_id, progress=15)
-    success, msg = kaggle_manager.push_job_to_dataset(
-        job_id=job_id,
-        video_path=str(file_path),
-        incident_type=incident_type,
-        frame_number=frame_number,   # None → kernel picks middle frame
+    success, msg = await loop.run_in_executor(
+        None,
+        lambda: kaggle_manager.push_job_to_dataset(
+            job_id=job_id,
+            video_path=str(file_path),
+            incident_type=incident_type,
+            frame_number=frame_number,
+        )
     )
     if not success:
         job_manager.update_job(job_id, status='failed', error=f'Dataset push: {msg}')
         return
 
-    # Step 2: Push kernel (triggers a new run on T4)
+    # If dataset was just created, Kaggle needs ~60s to index it before kernels can mount it
+    if 'initial' in msg or 'created' in msg.lower():
+        job_manager.update_job(job_id, progress=22)
+        await asyncio.sleep(60)
+
+    # Step 2: Push kernel (blocking — run in thread)
     job_manager.update_job(job_id, progress=30)
-    success, kernel_ref = kaggle_manager.push_kernel()
+    success, kernel_ref = await loop.run_in_executor(
+        None, lambda: kaggle_manager.push_kernel(job_id)
+    )
     if not success:
         job_manager.update_job(job_id, status='failed', error=f'Kernel push: {kernel_ref}')
         return
 
     job_manager.update_job(job_id, progress=40, kaggle_kernel_id=kernel_ref)
 
-    # Step 3: Poll until COMPLETE or ERROR
+    # Step 3: Poll until COMPLETE or ERROR (sleep yields event loop between polls)
     poll_steps = config.JOB_TIMEOUT_SECONDS // config.KAGGLE_POLL_INTERVAL_SECONDS
     for i in range(poll_steps):
         await asyncio.sleep(config.KAGGLE_POLL_INTERVAL_SECONDS)
-        kernel_status, failure_msg = kaggle_manager.get_kernel_status()
+
+        kernel_status, failure_msg = await loop.run_in_executor(
+            None, lambda: kaggle_manager.get_kernel_status(kernel_ref)
+        )
 
         if kernel_status == 'complete':
-            # Step 4: Download /kaggle/working/ outputs
+            # Step 4: Download outputs (blocking — run in thread)
             output_dir = config.OUTPUTS_DIR / job_id
-            success, msg = kaggle_manager.download_results(str(output_dir))
+            success, dl_msg = await loop.run_in_executor(
+                None, lambda: kaggle_manager.download_results(str(output_dir))
+            )
             if not success:
-                job_manager.update_job(job_id, status='failed', error=f'Download: {msg}')
+                job_manager.update_job(job_id, status='failed', error=f'Download: {dl_msg}')
                 return
 
-            # Parse verdict from downloaded verdict.json
             verdict_file = output_dir / job_id / 'verdict.json'
             verdict, confidence = 'UNCERTAIN', 0.0
             if verdict_file.exists():
                 with open(verdict_file) as f:
                     vdata = json.load(f)
                 verdict = vdata.get('verdict', 'UNCERTAIN')
-                confidence = vdata.get('confidence', 0.0)
+                confidence = float(vdata.get('confidence', 0.0))
 
             job_manager.update_job(
                 job_id,
@@ -482,10 +502,8 @@ async def _process_via_kaggle(
             return
 
         if kernel_status == 'failed':
-            logs = kaggle_manager.get_kernel_logs()
             job_manager.update_job(
-                job_id,
-                status='failed',
+                job_id, status='failed',
                 error=failure_msg or 'Kernel execution failed',
             )
             return

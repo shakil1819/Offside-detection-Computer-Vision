@@ -12,8 +12,8 @@
     "sports-analytics",
     "offside-detection"
   ],
-  "title": "Athletic Intelligence - Soccer Incident Review Dataset",
-  "subtitle": "Input videos and model weights for offside and goal detection",
+  "title": "Athletic Intelligence Soccer VAR Dataset",
+  "subtitle": "Input videos and source code for offside and goal detection",
   "description": "Dataset for the Athletic Intelligence VAR alternative system. Contains input videos for processing, YOLO model weights, and source code for the Kaggle kernel.",
   "isPrivate": true
 }
