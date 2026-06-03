@@ -10,6 +10,7 @@ Orchestrates video processing pipeline:
 6. Save results
 """
 
+import cv2
 import json
 import sys
 from pathlib import Path
@@ -32,6 +33,7 @@ from src.kernel.modules.offside_logic import OffsideAnalyzer
 from src.kernel.modules.goal_logic import GoalAnalyzer
 from src.kernel.modules.ball_detector import BallDetector
 from src.kernel.modules.visual_generator import VisualGenerator
+from src.kernel.modules.annotator import Annotator
 
 
 def process_single_incident(
@@ -117,13 +119,11 @@ def process_single_incident(
         if incident_type.lower() == 'offside':
             logger.info("Analyzing offside position")
 
-            # Classify teams
             players = detections
             teams = OffsideAnalyzer.classify_teams(players, frame)
             attackers = [p for i, p in enumerate(players) if teams.get(i, 0) == 0]
             defenders = [p for i, p in enumerate(players) if teams.get(i, 0) == 1]
 
-            # Analyze offside
             verdict, confidence, analysis_data = OffsideAnalyzer.analyze_offside(
                 attackers,
                 defenders,
@@ -133,15 +133,31 @@ def process_single_incident(
             result['verdict'] = verdict
             result['confidence'] = float(confidence)
 
-            # Generate diagram
+            # Annotated freeze frame (overlays applied to the incident frame)
+            offside_line_x = analysis_data.get('defender_x')
+            annotated_frame = Annotator.annotate_offside_frame(
+                frame=frame,
+                players=players,
+                teams=teams,
+                offside_line_x=offside_line_x,
+                verdict=verdict,
+                confidence=confidence,
+            )
+
+            # Save annotated freeze frame as PNG
+            freeze_path = str(output_dir / f'freeze_{incident_type}.png')
+            cv2.imwrite(freeze_path, annotated_frame)
+            result['freeze_path'] = freeze_path
+            logger.info(f"Annotated freeze frame saved: {freeze_path}")
+
+            # Generate top-down 3D diagram
             if config.ENABLE_VISUALIZATION:
                 logger.info("Generating offside diagram")
                 diagram_path = str(output_dir / f'diagram_{incident_type}.png')
-
                 VisualGenerator.offside_3d_diagram(
                     defender_bbox=analysis_data.get('defender_bbox'),
                     attacker_bbox=analysis_data.get('attacker_bbox'),
-                    ball_x=0,  # Would need ball detection
+                    ball_x=0,
                     verdict=verdict,
                     analysis_data=analysis_data,
                     output_path=diagram_path,
@@ -152,7 +168,6 @@ def process_single_incident(
         elif incident_type.lower() == 'goal':
             logger.info("Analyzing goal-line crossing")
 
-            # Detect ball
             ball_detector = BallDetector()
             ball_pos = ball_detector.detect(frame)
 
@@ -160,7 +175,6 @@ def process_single_incident(
                 logger.warning("Ball not detected for goal analysis")
                 verdict, confidence, analysis_data = 'UNCERTAIN', 0.0, {}
             else:
-                # Analyze goal
                 verdict, confidence, analysis_data = GoalAnalyzer.analyze_goal(
                     ball=ball_pos,
                     frame_height=video.frame_height,
@@ -169,14 +183,27 @@ def process_single_incident(
             result['verdict'] = verdict
             result['confidence'] = float(confidence)
 
-            # Generate diagram
+            # Annotated freeze frame
+            goal_line_x = video.frame_width * 0.95
+            annotated_frame = Annotator.annotate_goal_frame(
+                frame=frame,
+                ball_pos=ball_pos,
+                goal_line_x=goal_line_x,
+                verdict=verdict,
+                confidence=confidence,
+            )
+
+            freeze_path = str(output_dir / f'freeze_{incident_type}.png')
+            cv2.imwrite(freeze_path, annotated_frame)
+            result['freeze_path'] = freeze_path
+            logger.info(f"Annotated freeze frame saved: {freeze_path}")
+
             if config.ENABLE_VISUALIZATION:
                 logger.info("Generating goal-line diagram")
                 diagram_path = str(output_dir / f'diagram_{incident_type}.png')
-
                 VisualGenerator.goal_crossing_diagram(
                     ball_x=ball_pos[0] if ball_pos else 0,
-                    goal_line_x=video.frame_width * 0.95,
+                    goal_line_x=goal_line_x,
                     verdict=verdict,
                     analysis_data=analysis_data,
                     output_path=diagram_path,

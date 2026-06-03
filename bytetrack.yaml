@@ -1,0 +1,26 @@
+# ByteTrack config tuned for soccer (crowded scenes, fast-moving players)
+tracker_type: bytetrack
+
+# High-confidence detection threshold for primary matches
+# Lower slightly (0.45) to avoid losing occluded players in soccer crowds
+track_high_thresh: 0.45
+
+# Low-confidence threshold for re-association of lost tracks
+# Low value helps recover players after occlusion (player overlap common in soccer)
+track_low_thresh: 0.1
+
+# Minimum detection confidence to start a new track
+# 0.6 prevents false-positive tracks from crowd/ads in stands
+new_track_thresh: 0.6
+
+# Frames to keep a lost track alive before deletion
+# 30 frames @ 30fps = 1s buffer — covers most occlusion events in soccer
+track_buffer: 30
+
+# IoU threshold for matching detections to existing tracks
+# 0.8 is tight enough to avoid ID swaps when players are close
+match_thresh: 0.8
+
+# Fuse detection confidence score with IoU for matching
+# Keeps high-confidence detections from being displaced by weak ones
+fuse_score: True

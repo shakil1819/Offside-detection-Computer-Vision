@@ -76,16 +76,17 @@ class VideoProcessor:
         output_path: str,
         center_frame: int,
         duration_sec: int = 10,
-        codec: str = "mp4v",
     ) -> str:
         """
         Extract a clip (5-15 seconds) centered on a specific frame.
+
+        Tries H.264 (avc1) first for browser-compatible MP4.
+        Falls back to mp4v if H.264 encoder is not available.
 
         Args:
             output_path: Path to save output clip
             center_frame: Center frame index
             duration_sec: Duration of clip in seconds
-            codec: Video codec (e.g., 'mp4v', 'MJPG')
 
         Returns:
             Path to output clip
@@ -95,23 +96,28 @@ class VideoProcessor:
         start_frame = max(0, center_frame - clip_frames // 2)
         end_frame = min(self.total_frames - 1, start_frame + clip_frames - 1)
 
-        # Adjust start if we're too close to end
+        # Adjust start if we hit the video end
         if end_frame - start_frame < clip_frames:
             start_frame = max(0, end_frame - clip_frames + 1)
 
-        # Create video writer
-        fourcc = cv2.VideoWriter_fourcc(*codec)
-        out = cv2.VideoWriter(
-            output_path,
-            fourcc,
-            self.fps,
-            (self.frame_width, self.frame_height),
-        )
+        # Try H.264 first (browser-compatible), fall back to mp4v
+        codecs = ["avc1", "H264", "mp4v"]
+        out = None
+        for codec in codecs:
+            fourcc = cv2.VideoWriter_fourcc(*codec)
+            out = cv2.VideoWriter(
+                output_path,
+                fourcc,
+                self.fps,
+                (self.frame_width, self.frame_height),
+            )
+            if out.isOpened():
+                break
+            out = None
 
-        if not out.isOpened():
-            raise ValueError(f"Cannot create output video: {output_path}")
+        if out is None:
+            raise ValueError(f"Cannot create output video (no supported codec): {output_path}")
 
-        # Write frames
         for frame in self.get_frames_range(start_frame, end_frame):
             out.write(frame)
 

@@ -3,9 +3,20 @@ Player and object detection using YOLOv11x-pose model.
 """
 
 import numpy as np
+from pathlib import Path
 from ultralytics import YOLO
-from typing import List, Dict, Tuple, Optional
+from typing import List, Tuple, Optional
 from dataclasses import dataclass
+
+# Absolute path to tracker config — works regardless of working directory
+_BYTETRACK_CONFIG = Path(__file__).parents[4] / "bytetrack.yaml"
+
+# COCO person class ID
+_PERSON_CLASS_ID = 0
+
+# Inference image size: 1280px for soccer footage
+# Soccer stadiums have lots of players far from camera — 640 loses them
+_INFERENCE_IMGSZ = 1280
 
 
 @dataclass
@@ -13,43 +24,56 @@ class Detection:
     """A detected object in a frame."""
 
     class_id: int
-    class_name: str  # "player", "ball"
+    class_name: str  # "person"
     bbox: Tuple[float, float, float, float]  # (x1, y1, x2, y2)
     confidence: float
-    keypoints: Optional[np.ndarray] = None  # (17, 2) for pose
-    track_id: Optional[int] = None  # Tracking ID across frames
+    keypoints: Optional[np.ndarray] = None  # (17, 2) ankle/wrist etc.
+    track_id: Optional[int] = None
 
     @property
     def center(self) -> Tuple[float, float]:
-        """Get bbox center coordinates."""
+        """Get bbox center (cx, cy)."""
         x1, y1, x2, y2 = self.bbox
         return ((x1 + x2) / 2, (y1 + y2) / 2)
 
     @property
     def width(self) -> float:
-        """Get bbox width."""
         x1, _, x2, _ = self.bbox
         return x2 - x1
 
     @property
     def height(self) -> float:
-        """Get bbox height."""
         _, y1, _, y2 = self.bbox
         return y2 - y1
 
+    @property
+    def foot_center(self) -> Tuple[float, float]:
+        """Approximate foot position: bottom-center of bbox."""
+        x1, _, x2, y2 = self.bbox
+        return ((x1 + x2) / 2, y2)
+
 
 class ObjectDetector:
-    """Detect players and objects using YOLOv11x-pose model."""
+    """Detect players using YOLOv11x-pose model with ByteTrack tracking."""
 
     def __init__(self, model_name: str = "yolo11x-pose"):
-        """
-        Initialize detector with YOLO model.
+        """Initialize detector.
 
         Args:
-            model_name: YOLO model name (e.g., 'yolo11x-pose', 'yolo11s-pose')
+            model_name: YOLO model name without extension.
+                        Ultralytics auto-downloads if not cached.
+                        Options: yolo11n-pose, yolo11s-pose, yolo11x-pose
         """
         self.model = YOLO(f"{model_name}.pt")
         self.model_name = model_name
+
+        # Verify tracker config exists
+        if not _BYTETRACK_CONFIG.exists():
+            raise FileNotFoundError(
+                f"ByteTrack config not found: {_BYTETRACK_CONFIG}. "
+                "Ensure bytetrack.yaml is at project root."
+            )
+        self.tracker_config = str(_BYTETRACK_CONFIG)
 
     def detect(
         self,
@@ -57,76 +81,52 @@ class ObjectDetector:
         confidence_threshold: float = 0.5,
         verbose: bool = False,
     ) -> List[Detection]:
-        """
-        Detect objects in a single frame.
+        """Detect persons in a single frame (no tracking).
 
         Args:
-            frame: Input frame (BGR format from OpenCV)
-            confidence_threshold: Minimum confidence for detections
-            verbose: Print verbose output
+            frame: BGR frame from OpenCV
+            confidence_threshold: Minimum detection confidence
+            verbose: Print YOLO output
 
         Returns:
-            List of detected objects
+            List of Detection objects (persons only)
         """
-        results = self.model.predict(frame, conf=confidence_threshold, verbose=verbose)
-        detections = []
-
-        result = results[0]
-        if result.boxes is None:
-            return detections
-
-        boxes = result.boxes.xyxy.cpu().numpy()
-        confidences = result.boxes.conf.cpu().numpy()
-        class_ids = result.boxes.cls.cpu().numpy()
-        keypoints_data = (
-            result.keypoints.xy.cpu().numpy() if result.keypoints is not None else None
+        results = self.model.predict(
+            frame,
+            conf=confidence_threshold,
+            classes=[_PERSON_CLASS_ID],  # Only detect persons
+            imgsz=_INFERENCE_IMGSZ,
+            agnostic_nms=True,  # Suppress cross-class NMS conflicts
+            verbose=verbose,
         )
 
-        for i, (box, conf, cls_id) in enumerate(zip(boxes, confidences, class_ids)):
-            cls_id = int(cls_id)
-            class_name = result.names[cls_id]
-
-            # Only keep "person" class (class 0 in COCO)
-            if class_name != "person":
-                continue
-
-            keypoints = keypoints_data[i] if keypoints_data is not None else None
-
-            detection = Detection(
-                class_id=cls_id,
-                class_name=class_name,
-                bbox=tuple(box),
-                confidence=float(conf),
-                keypoints=keypoints,
-                track_id=None,  # Set by tracking pipeline
-            )
-            detections.append(detection)
-
-        return detections
+        return self._parse_result(results[0])
 
     def detect_with_tracking(
         self,
         frame: np.ndarray,
-        confidence_threshold: float = 0.5,
-        tracker_yaml: str = "bytetrack.yaml",
+        confidence_threshold: float = 0.45,
+        verbose: bool = False,
     ) -> List[Detection]:
-        """
-        Detect objects with tracking across frames.
+        """Detect and track persons across frames using ByteTrack.
 
         Args:
-            frame: Input frame
-            confidence_threshold: Minimum confidence
-            tracker_yaml: Path to tracker config
+            frame: BGR frame from OpenCV
+            confidence_threshold: Minimum detection confidence
+            verbose: Print YOLO output
 
         Returns:
-            List of detected objects with track IDs
+            List of Detection objects with track_id set
         """
         results = self.model.track(
             frame,
             conf=confidence_threshold,
-            persist=True,
-            tracker=tracker_yaml,
-            verbose=False,
+            classes=[_PERSON_CLASS_ID],
+            imgsz=_INFERENCE_IMGSZ,
+            agnostic_nms=True,
+            persist=True,  # Keep track state between calls
+            tracker=self.tracker_config,
+            verbose=verbose,
         )
 
         detections = []
@@ -146,7 +146,7 @@ class ObjectDetector:
             keypoints = keypoints_data[i] if keypoints_data is not None else None
 
             detection = Detection(
-                class_id=0,
+                class_id=_PERSON_CLASS_ID,
                 class_name="person",
                 bbox=tuple(box),
                 confidence=float(conf),
@@ -154,5 +154,40 @@ class ObjectDetector:
                 track_id=int(track_id),
             )
             detections.append(detection)
+
+        return detections
+
+    def _parse_result(self, result) -> List[Detection]:
+        """Parse a single YOLO result into Detection objects.
+
+        Only returns person class detections.
+        """
+        detections = []
+
+        if result.boxes is None:
+            return detections
+
+        boxes = result.boxes.xyxy.cpu().numpy()
+        confidences = result.boxes.conf.cpu().numpy()
+        class_ids = result.boxes.cls.cpu().numpy()
+        keypoints_data = (
+            result.keypoints.xy.cpu().numpy() if result.keypoints is not None else None
+        )
+
+        for i, (box, conf, cls_id) in enumerate(zip(boxes, confidences, class_ids)):
+            cls_id = int(cls_id)
+            if cls_id != _PERSON_CLASS_ID:
+                continue
+
+            keypoints = keypoints_data[i] if keypoints_data is not None else None
+
+            detections.append(Detection(
+                class_id=cls_id,
+                class_name="person",
+                bbox=tuple(box),
+                confidence=float(conf),
+                keypoints=keypoints,
+                track_id=None,
+            ))
 
         return detections
