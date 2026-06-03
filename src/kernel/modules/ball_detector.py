@@ -85,8 +85,7 @@ class BallDetector:
         video_path: str,
         max_frames: Optional[int] = None,
     ) -> Tuple[list, list]:
-        """
-        Detect ball in all frames of a video.
+        """Detect ball in all frames of a video.
 
         Args:
             video_path: Path to video file
@@ -115,3 +114,49 @@ class BallDetector:
 
         cap.release()
         return ball_positions, frame_indices
+
+    @staticmethod
+    def detect_kick_event(
+        ball_positions: list,
+        frame_indices: list,
+        velocity_sigma: float = 1.5,
+    ) -> Optional[int]:
+        """Detect the frame where the ball was kicked (velocity spike).
+
+        Computes frame-to-frame ball velocity and returns the first frame
+        where velocity exceeds mean + (velocity_sigma * std). This approximates
+        the moment of pass/shot for offside timing.
+
+        Args:
+            ball_positions: List of (x, y) or None per frame
+            frame_indices: Corresponding frame index list
+            velocity_sigma: Threshold multiplier above mean velocity
+
+        Returns:
+            Frame index immediately after the kick, or None if not detected
+        """
+        if len(ball_positions) < 4:
+            return None
+
+        velocities = []
+        for i in range(1, len(ball_positions)):
+            prev = ball_positions[i - 1]
+            curr = ball_positions[i]
+            if prev is None or curr is None:
+                velocities.append(0.0)
+            else:
+                vel = float(np.linalg.norm(np.array(curr) - np.array(prev)))
+                velocities.append(vel)
+
+        if not velocities:
+            return None
+
+        mean_vel = np.mean(velocities)
+        std_vel = np.std(velocities)
+        threshold = mean_vel + velocity_sigma * std_vel
+
+        for i, vel in enumerate(velocities):
+            if vel > threshold and i + 1 < len(frame_indices):
+                return frame_indices[i + 1]
+
+        return None
