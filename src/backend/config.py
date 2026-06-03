@@ -1,0 +1,59 @@
+"""Backend configuration."""
+
+import os
+from pathlib import Path
+from typing import Optional
+
+
+class BackendConfig:
+    """Backend configuration."""
+
+    # Paths
+    PROJECT_ROOT = Path(__file__).parent.parent.parent
+    BACKEND_DIR = PROJECT_ROOT / 'src' / 'backend'
+    STORAGE_DIR = BACKEND_DIR / 'storage'
+    DATA_DIR = BACKEND_DIR / 'data'
+    UPLOADS_DIR = DATA_DIR / 'uploads'
+    OUTPUTS_DIR = DATA_DIR / 'outputs'
+
+    # Create directories
+    STORAGE_DIR.mkdir(parents=True, exist_ok=True)
+    UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+    OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    # Kaggle Configuration
+    KAGGLE_USERNAME: Optional[str] = os.getenv('KAGGLE_USERNAME')
+    KAGGLE_KEY: Optional[str] = os.getenv('KAGGLE_KEY')
+    KAGGLE_DATASET_NAME: str = os.getenv('KAGGLE_DATASET_NAME', 'athletic-intelligence-dataset')
+
+    # Server Configuration
+    HOST: str = os.getenv('BACKEND_HOST', '0.0.0.0')
+    PORT: int = int(os.getenv('BACKEND_PORT', '8000'))
+    DEBUG: bool = os.getenv('DEBUG', 'False').lower() == 'true'
+
+    # Job Configuration
+    JOB_TIMEOUT_SECONDS: int = 300  # 5 minutes total timeout
+    KAGGLE_POLL_INTERVAL_SECONDS: int = 5  # Check Kaggle status every 5s
+    MAX_RETRIES: int = 3
+    RETRY_DELAY_SECONDS: int = 2
+
+    # Video Configuration
+    MAX_VIDEO_SIZE_MB: int = 500
+    ALLOWED_VIDEO_FORMATS: tuple = ('.mp4', '.avi', '.mov', '.mkv')
+
+    # Job State File
+    JOBS_STATE_FILE: Path = STORAGE_DIR / 'jobs.json'
+
+    # Job State
+    JOB_STATUSES = {
+        'PENDING': 'pending',
+        'UPLOADING': 'uploading',
+        'PROCESSING': 'processing',
+        'COMPLETED': 'completed',
+        'FAILED': 'failed',
+    }
+
+
+def get_backend_config() -> BackendConfig:
+    """Get backend configuration instance."""
+    return BackendConfig()
