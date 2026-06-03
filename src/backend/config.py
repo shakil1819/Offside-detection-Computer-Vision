@@ -37,6 +37,10 @@ class BackendConfig:
     MAX_RETRIES: int = 3
     RETRY_DELAY_SECONDS: int = 2
 
+    # Local processing mode — bypass Kaggle, run kernel directly on this machine
+    # Set LOCAL_PROCESSING=true in .env for local dev/demo
+    LOCAL_PROCESSING: bool = os.getenv('LOCAL_PROCESSING', 'true').lower() == 'true'
+
     # Video Configuration
     MAX_VIDEO_SIZE_MB: int = 500
     ALLOWED_VIDEO_FORMATS: tuple = ('.mp4', '.avi', '.mov', '.mkv')

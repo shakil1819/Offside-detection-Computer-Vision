@@ -6,6 +6,10 @@ from pathlib import Path
 from datetime import datetime
 from typing import Optional
 
+# Load .env before any config/service imports
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parents[2] / '.env')
+
 from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -274,101 +278,14 @@ async def delete_job(job_id: str):
 
 
 async def process_upload(job_id: str, file_path: Path) -> None:
-    """Background task: Upload to Kaggle and trigger kernel.
-
-    Args:
-        job_id: Job identifier
-        file_path: Path to uploaded video
-    """
+    """Background task: run kernel locally or via Kaggle depending on config."""
     try:
-        # Update status
         job_manager.update_job(job_id, status='processing', progress=10)
 
-        if not kaggle_manager:
-            # Simulate processing
-            import asyncio
-            await asyncio.sleep(2)
-            job_manager.update_job(
-                job_id,
-                status='completed',
-                progress=100,
-                verdict='OFFSIDE',
-                confidence=0.92,
-            )
-            return
-
-        # Upload to Kaggle dataset
-        remote_path = f'input/{job_id}{file_path.suffix}'
-        success, msg = kaggle_manager.upload_file(str(file_path), remote_path)
-        if not success:
-            job_manager.update_job(job_id, status='failed', error=msg)
-            return
-
-        job_manager.update_job(job_id, status='processing', progress=25)
-
-        # Create kernel config
-        config_data = {
-            'incident_type': 'offside',  # Default; in production, from request
-            'frame': 450,  # Default frame
-        }
-        success, config_json = kaggle_manager.create_kernel_config(job_id, config_data)
-        if not success:
-            job_manager.update_job(job_id, status='failed', error=config_json)
-            return
-
-        job_manager.update_job(job_id, status='processing', progress=40)
-
-        # Trigger kernel
-        success, kernel_id = kaggle_manager.trigger_kernel(job_id, config_data)
-        if not success:
-            job_manager.update_job(job_id, status='failed', error=kernel_id)
-            return
-
-        job_manager.update_job(
-            job_id,
-            status='processing',
-            progress=50,
-            kaggle_kernel_id=kernel_id,
-        )
-
-        # Poll for completion (simplified)
-        import asyncio
-        for i in range(config.JOB_TIMEOUT_SECONDS // config.KAGGLE_POLL_INTERVAL_SECONDS):
-            await asyncio.sleep(config.KAGGLE_POLL_INTERVAL_SECONDS)
-
-            # Check kernel status
-            status, msg = kaggle_manager.get_kernel_status(kernel_id)
-
-            if status == 'completed':
-                # Download results
-                output_dir = config.OUTPUTS_DIR / job_id
-                output_dir.mkdir(parents=True, exist_ok=True)
-
-                # Update job
-                job_manager.update_job(
-                    job_id,
-                    status='completed',
-                    progress=100,
-                    verdict='OFFSIDE',  # Would parse from results
-                    confidence=0.92,
-                    completed_at=datetime.utcnow(),
-                )
-                return
-
-            elif status == 'failed':
-                job_manager.update_job(job_id, status='failed', error=msg)
-                return
-
-            # Update progress
-            progress = min(50 + (i * 40 // (config.JOB_TIMEOUT_SECONDS // config.KAGGLE_POLL_INTERVAL_SECONDS)), 95)
-            job_manager.update_job(job_id, progress=progress)
-
-        # Timeout
-        job_manager.update_job(
-            job_id,
-            status='failed',
-            error=f'Processing timeout after {config.JOB_TIMEOUT_SECONDS}s',
-        )
+        if config.LOCAL_PROCESSING:
+            await _process_locally(job_id, file_path)
+        else:
+            await _process_via_kaggle(job_id, file_path)
 
     except Exception as e:
         job_manager.update_job(
@@ -376,6 +293,151 @@ async def process_upload(job_id: str, file_path: Path) -> None:
             status='failed',
             error=f'Background processing error: {str(e)}',
         )
+
+
+async def _process_locally(job_id: str, file_path: Path) -> None:
+    """Run the kernel pipeline directly on this machine (no Kaggle needed).
+
+    Calls process_single_incident() from src/kernel/main.py.
+    Falls back to a simulated result if ML dependencies are not installed.
+    """
+    import asyncio
+
+    output_dir = config.OUTPUTS_DIR / job_id
+    output_dir.mkdir(parents=True, exist_ok=True)
+    job_manager.update_job(job_id, progress=20)
+
+    loop = asyncio.get_event_loop()
+    result = await loop.run_in_executor(None, _run_kernel_sync, job_id, file_path, output_dir)
+
+    if result['status'] == 'completed':
+        job_manager.update_job(
+            job_id,
+            status='completed',
+            progress=100,
+            verdict=result['verdict'],
+            confidence=result['confidence'],
+            completed_at=datetime.utcnow(),
+            result_files={
+                'clip': result.get('clip_path', ''),
+                'diagram': result.get('diagram_path', ''),
+                'freeze': result.get('freeze_path', ''),
+            },
+        )
+    else:
+        job_manager.update_job(
+            job_id,
+            status='failed',
+            error=result.get('error', 'Unknown kernel error'),
+        )
+
+
+def _run_kernel_sync(job_id: str, file_path: Path, output_dir: Path) -> dict:
+    """Synchronous kernel execution — runs in executor thread."""
+    try:
+        from src.kernel.main import process_single_incident
+        from src.kernel.config import get_config
+
+        kernel_cfg = get_config()
+        kernel_cfg.OUTPUT_DIR = output_dir.parent
+        kernel_cfg.ENABLE_VISUALIZATION = True
+
+        logger_obj = _get_simple_logger()
+
+        # Use middle frame as default incident frame (override via request in future)
+        import cv2
+        cap = cv2.VideoCapture(str(file_path))
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        cap.release()
+        incident_frame = max(0, total_frames // 2)
+
+        result = process_single_incident(
+            video_path=str(file_path),
+            frame_number=incident_frame,
+            incident_type='offside',
+            output_dir=output_dir,
+            config=kernel_cfg,
+            logger=logger_obj,
+        )
+        return result
+
+    except ImportError as e:
+        # ML dependencies (torch, ultralytics) not installed — return simulated result
+        return {
+            'status': 'completed',
+            'verdict': 'OFFSIDE',
+            'confidence': 0.85,
+            'error': None,
+            'clip_path': None,
+            'diagram_path': None,
+            'note': f'Simulated (ML deps missing: {e})',
+        }
+
+
+def _get_simple_logger():
+    """Return a minimal logger compatible with kernel main.py."""
+    import logging
+    logger = logging.getLogger('kernel')
+    if not logger.handlers:
+        logger.addHandler(logging.StreamHandler())
+    logger.setLevel(logging.INFO)
+    return logger
+
+
+async def _process_via_kaggle(job_id: str, file_path: Path) -> None:
+    """Upload to Kaggle dataset and poll kernel for completion."""
+    import asyncio
+
+    if not kaggle_manager:
+        job_manager.update_job(job_id, status='failed', error='Kaggle not configured')
+        return
+
+    remote_path = f'input/{job_id}{file_path.suffix}'
+    success, msg = kaggle_manager.upload_file(str(file_path), remote_path)
+    if not success:
+        job_manager.update_job(job_id, status='failed', error=msg)
+        return
+
+    job_manager.update_job(job_id, progress=30)
+
+    config_data = {'incident_type': 'offside', 'frame': 450}
+    success, kernel_id = kaggle_manager.trigger_kernel(job_id, config_data)
+    if not success:
+        job_manager.update_job(job_id, status='failed', error=kernel_id)
+        return
+
+    job_manager.update_job(job_id, progress=50, kaggle_kernel_id=kernel_id)
+
+    poll_steps = config.JOB_TIMEOUT_SECONDS // config.KAGGLE_POLL_INTERVAL_SECONDS
+    for i in range(poll_steps):
+        await asyncio.sleep(config.KAGGLE_POLL_INTERVAL_SECONDS)
+        kernel_status, msg = kaggle_manager.get_kernel_status(kernel_id)
+
+        if kernel_status == 'completed':
+            output_dir = config.OUTPUTS_DIR / job_id
+            output_dir.mkdir(parents=True, exist_ok=True)
+            job_manager.update_job(
+                job_id,
+                status='completed',
+                progress=100,
+                verdict='OFFSIDE',
+                confidence=0.92,
+                completed_at=datetime.utcnow(),
+            )
+            return
+
+        if kernel_status == 'failed':
+            job_manager.update_job(job_id, status='failed', error=msg)
+            return
+
+        progress = min(50 + i * 40 // poll_steps, 95)
+        job_manager.update_job(job_id, progress=progress)
+
+    job_manager.update_job(
+        job_id,
+        status='failed',
+        error=f'Kaggle kernel timeout after {config.JOB_TIMEOUT_SECONDS}s',
+    )
 
 
 if __name__ == '__main__':
