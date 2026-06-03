@@ -11,7 +11,7 @@ from typing import Optional
 from dotenv import load_dotenv
 load_dotenv(Path(__file__).parents[2] / '.env')
 
-from fastapi import FastAPI, UploadFile, File, HTTPException, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException, BackgroundTasks
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -39,6 +39,7 @@ try:
             username=config.KAGGLE_USERNAME,
             dataset_staging_dir=str(config.KAGGLE_DATASET_STAGING_DIR),
             kernel_dir=str(config.KAGGLE_KERNEL_DIR),
+            project_root=str(project_root),
         )
     else:
         kaggle_manager = None
@@ -88,32 +89,40 @@ async def health():
 
 
 @app.post('/upload', response_model=UploadResponse, tags=['upload'])
-async def upload_video(file: UploadFile = File(...), background_tasks: BackgroundTasks = None):
-    """Upload video for processing.
+async def upload_video(
+    file: UploadFile = File(...),
+    incident_type: str = Form('offside'),
+    frame_number: Optional[int] = Form(None),
+    simulate: bool = Form(False),   # True = skip Kaggle, run locally (for testing)
+    background_tasks: BackgroundTasks = None,
+):
+    """Upload video and automatically run full pipeline.
 
     Args:
-        file: Video file to upload
-        background_tasks: Background task runner
+        file:          Video file (multipart/form-data)
+        incident_type: 'offside' or 'goal' (default: offside)
+        frame_number:  Frame index to analyze (default: None = middle frame)
+        background_tasks: FastAPI background runner
 
     Returns:
-        UploadResponse with job_id and status
+        UploadResponse with job_id — poll /status/{job_id} for progress
     """
     try:
-        # Validate file
         if not file.filename:
             raise HTTPException(status_code=400, detail='No filename provided')
 
-        # Check file size before reading
-        file_size_mb = len(await file.read()) / (1024 * 1024)
-        await file.seek(0)  # Reset file pointer
+        is_valid, err = validate_incident_type(incident_type)
+        if not is_valid:
+            raise HTTPException(status_code=400, detail=err)
 
+        file_bytes = await file.read()
+        file_size_mb = len(file_bytes) / (1024 * 1024)
         if file_size_mb > config.MAX_VIDEO_SIZE_MB:
             raise HTTPException(
                 status_code=413,
                 detail=f'File too large: {file_size_mb:.1f}MB > {config.MAX_VIDEO_SIZE_MB}MB',
             )
 
-        # Check file extension
         file_ext = Path(file.filename).suffix.lower()
         if file_ext not in config.ALLOWED_VIDEO_FORMATS:
             raise HTTPException(
@@ -121,29 +130,24 @@ async def upload_video(file: UploadFile = File(...), background_tasks: Backgroun
                 detail=f'Invalid format: {file_ext}. Allowed: {config.ALLOWED_VIDEO_FORMATS}',
             )
 
-        # Create job
         job_id = job_manager.create_job(file.filename)
-
-        # Save file
         saved_path = config.UPLOADS_DIR / f'{job_id}{file_ext}'
-        with open(saved_path, 'wb') as f:
-            f.write(await file.read())
+        with open(saved_path, 'wb') as fh:
+            fh.write(file_bytes)
 
-        # Update job with file path
-        job_manager.update_job(
-            job_id,
-            status='uploading',
-            started_at=datetime.utcnow(),
-        )
+        job_manager.update_job(job_id, status='uploading', started_at=datetime.utcnow())
 
-        # Background: Upload to Kaggle (simulated for now)
+        # simulate=True forces local processing for this job (overrides LOCAL_PROCESSING config)
+        force_local = simulate or config.LOCAL_PROCESSING
         if background_tasks:
-            background_tasks.add_task(process_upload, job_id, saved_path)
+            background_tasks.add_task(
+                process_upload, job_id, saved_path, incident_type, frame_number, force_local
+            )
 
         return UploadResponse(
             job_id=job_id,
             status='uploading',
-            message='Video received, queued for processing',
+            message=f'Received {file.filename} ({file_size_mb:.1f} MB) — pipeline starting',
         )
 
     except HTTPException:
@@ -283,15 +287,21 @@ async def delete_job(job_id: str):
 # Background tasks
 
 
-async def process_upload(job_id: str, file_path: Path) -> None:
-    """Background task: run kernel locally or via Kaggle depending on config."""
+async def process_upload(
+    job_id: str,
+    file_path: Path,
+    incident_type: str = 'offside',
+    frame_number: Optional[int] = None,
+    force_local: bool = False,
+) -> None:
+    """Background task: run full pipeline locally or via Kaggle."""
     try:
         job_manager.update_job(job_id, status='processing', progress=10)
 
-        if config.LOCAL_PROCESSING:
-            await _process_locally(job_id, file_path)
+        if force_local:
+            await _process_locally(job_id, file_path, incident_type, frame_number)
         else:
-            await _process_via_kaggle(job_id, file_path)
+            await _process_via_kaggle(job_id, file_path, incident_type, frame_number)
 
     except Exception as e:
         job_manager.update_job(
@@ -301,7 +311,12 @@ async def process_upload(job_id: str, file_path: Path) -> None:
         )
 
 
-async def _process_locally(job_id: str, file_path: Path) -> None:
+async def _process_locally(
+    job_id: str,
+    file_path: Path,
+    incident_type: str = 'offside',
+    frame_number: Optional[int] = None,
+) -> None:
     """Run the kernel pipeline directly on this machine (no Kaggle needed).
 
     Calls process_single_incident() from src/kernel/main.py.
@@ -314,7 +329,9 @@ async def _process_locally(job_id: str, file_path: Path) -> None:
     job_manager.update_job(job_id, progress=20)
 
     loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, _run_kernel_sync, job_id, file_path, output_dir)
+    result = await loop.run_in_executor(
+        None, _run_kernel_sync, job_id, file_path, output_dir, incident_type, frame_number
+    )
 
     if result['status'] == 'completed':
         job_manager.update_job(
@@ -338,7 +355,13 @@ async def _process_locally(job_id: str, file_path: Path) -> None:
         )
 
 
-def _run_kernel_sync(job_id: str, file_path: Path, output_dir: Path) -> dict:
+def _run_kernel_sync(
+    job_id: str,
+    file_path: Path,
+    output_dir: Path,
+    incident_type: str = 'offside',
+    frame_number: Optional[int] = None,
+) -> dict:
     """Synchronous kernel execution — runs in executor thread."""
     try:
         from src.kernel.main import process_single_incident
@@ -352,15 +375,16 @@ def _run_kernel_sync(job_id: str, file_path: Path, output_dir: Path) -> dict:
 
         # Use middle frame as default incident frame (override via request in future)
         import cv2
-        cap = cv2.VideoCapture(str(file_path))
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        cap.release()
-        incident_frame = max(0, total_frames // 2)
+        if frame_number is None:
+            cap = cv2.VideoCapture(str(file_path))
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            cap.release()
+            frame_number = max(0, total_frames // 2)
 
         result = process_single_incident(
             video_path=str(file_path),
-            frame_number=incident_frame,
-            incident_type='offside',
+            frame_number=frame_number,
+            incident_type=incident_type,
             output_dir=output_dir,
             config=kernel_cfg,
             logger=logger_obj,
@@ -390,7 +414,12 @@ def _get_simple_logger():
     return logger
 
 
-async def _process_via_kaggle(job_id: str, file_path: Path) -> None:
+async def _process_via_kaggle(
+    job_id: str,
+    file_path: Path,
+    incident_type: str = 'offside',
+    frame_number: Optional[int] = None,
+) -> None:
     """Push video to Kaggle dataset, trigger kernel, poll, download results."""
     import asyncio
 
@@ -398,17 +427,13 @@ async def _process_via_kaggle(job_id: str, file_path: Path) -> None:
         job_manager.update_job(job_id, status='failed', error='Kaggle not configured')
         return
 
-    job = job_manager.get_job(job_id)
-    incident_type = 'offside'  # TODO: accept from upload request
-    frame_number = None        # None = kernel uses middle frame
-
-    # Step 1: Push video + config to Kaggle dataset
+    # Step 1: Sync src/kernel/, stage video + config, push dataset version
     job_manager.update_job(job_id, progress=15)
     success, msg = kaggle_manager.push_job_to_dataset(
         job_id=job_id,
         video_path=str(file_path),
-        frame_number=frame_number or 0,
         incident_type=incident_type,
+        frame_number=frame_number,   # None → kernel picks middle frame
     )
     if not success:
         job_manager.update_job(job_id, status='failed', error=f'Dataset push: {msg}')
