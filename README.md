@@ -176,56 +176,6 @@ offside-detection-tracking/
 
 ---
 
-## SDLC
-
-### Phase 1 - Kaggle Kernel POC (Weeks 1-4)
-
-**Requirements**
-- Process single-camera match footage offline
-- Extract annotated clip around user-specified frame
-- Detect players via pose estimation (no manual labeling)
-- Classify teams by jersey color
-- Return ONSIDE/OFFSIDE or GOAL/NO-GOAL verdict
-- Generate shareable positional diagram
-- Zero infrastructure cost
-
-**Design Decisions**
-- Kaggle Kernel replaces cloud server - eliminates $50-200/month ops cost
-- YOLOv11x-pose over YOLOv8m - foot keypoints give sub-pixel offside precision
-- K-means over manual jersey labels - works without labeled training data
-- Full video output, not clipped - referees need full context
-- Verdict always binary (ONSIDE/OFFSIDE) - UNCERTAIN removed to force a decision
-
-**Implementation**
-- Extracted and refactored modules from Gradio MVP
-- Single-pass pipeline (freeze frame analysis, not two-pass tracking)
-- ByteTrack for stable player IDs across frames
-- Structured JSON logging for all runs
-
-**Testing**
-- Unit tests: `offside_logic`, `goal_logic`, `object_detector`
-- Integration test: full pipeline on sample 30-second clip
-- GPU validation: tested on Kaggle T4 x2
-
-**Deployment**
-- Upload video to Kaggle dataset via `kaggle-cli`
-- Run kernel (automated, no intervention after upload)
-- Download results via `kaggle-cli`
-
----
-
-### Phase 2 - Web UI (Weeks 5-8)
-
-Upload interface + result viewer. FastAPI wraps the kernel pipeline. Users upload a clip, specify frame and incident type, receive verdict + diagram in browser.
-
----
-
-### Phase 3 - Production Server (3-6 months)
-
-Self-hosted FastAPI + Celery + Redis. Multi-team accounts. Real-time processing. S3 storage. Kubernetes scaling.
-
----
-
 ## Local Development Setup
 
 ### Prerequisites
