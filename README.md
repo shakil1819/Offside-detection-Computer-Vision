@@ -59,6 +59,55 @@ Kaggle Dataset (output/)
 Results (clip, verdict, diagram, logs)
 ```
 
+### System Design Flowchart
+
+```mermaid
+graph TD
+    A["` User Upload `"] --> B["` FastAPI /upload `"]
+    B --> C["` JobManager.create_job `"]
+    C --> D["` Save Video to uploads/ `"]
+    D --> E{" ` LOCAL_PROCESSING? ` "}
+    
+    E -->|" ` true ` "| F["` _process_locally `"]
+    E -->|" ` false ` "| G["` _process_via_kaggle `"]
+    
+    F --> F1["` Import src.kernel.main `"]
+    F1 --> F2["` process_single_incident `"]
+    F2 --> F3["` Output to outputs/{job_id}/ `"]
+    
+    G --> G1["` KaggleManager.push_job_to_dataset `"]
+    G1 --> G2["` Stage video + current_job.json `"]
+    G2 --> G3["` Kaggle API: dataset_create_version `"]
+    G3 --> G4["` KaggleManager.push_kernel `"]
+    G4 --> G5["` Kaggle API: kernels_push T4 GPU `"]
+    G5 --> G6["` Kaggle runs kaggle_main.py `"]
+    
+    G6 --> G7["` Load current_job.json `"]
+    G7 --> G8["` YOLOv11x-pose detection `"]
+    G8 --> G9["` K-means team classification `"]
+    G9 --> G10["` Offside/Goal logic `"]
+    G10 --> G11["` Generate outputs `"]
+    G11 --> G12["` Write /kaggle/working/{job_id}/ `"]
+    
+    G12 --> G13["` KaggleManager.get_kernel_status `"]
+    G13 --> G14{" ` Status? ` "}
+    G14 -->|" ` complete ` "| G15["` KaggleManager.download_results `"]
+    G14 -->|" ` failed ` "| G16["` Update job: failed `"]
+    G14 -->|" ` running ` "| G13
+    
+    G15 --> G17["` Kaggle API: kernels_output `"]
+    G17 --> G18["` Save to outputs/{job_id}/ `"]
+    
+    F3 --> H["` JobManager.update_job: completed `"]
+    G18 --> H
+    G16 --> H
+    
+    H --> I["` GET /status/{job_id} `"]
+    I --> J["` Return job state + verdict `"]
+    J --> K["` GET /download/{job_id}?format=video|freeze|diagram|json `"]
+    K --> L["` Return file response `"]
+```
+
 ### Module Breakdown
 
 | Module | Responsibility |
