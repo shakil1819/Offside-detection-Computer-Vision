@@ -23,7 +23,18 @@ classifiers = [
 ]
 
 dependencies = [
-    # Core ML (torch/ultralytics wheels available for 3.10-3.12)
+    # Worker-compatible packages only (pywrangler bundles these into Pyodide)
+    "fastapi>=0.104.0",
+    "httpx>=0.24.0",
+    "pydantic>=2.0.0",
+    "python-multipart>=0.0.6",
+    "python-dotenv>=1.0.0",
+    "pywrangler>=0.0.2",
+]
+
+[project.optional-dependencies]
+ml = [
+    # ML + local processing deps (Kaggle kernel, local uvicorn server)
     "ultralytics>=8.2.0,<9.0.0",
     "opencv-python>=4.8.0,<5.0.0",
     "numpy>=1.24.0",
@@ -32,19 +43,10 @@ dependencies = [
     "scikit-learn>=1.3.0",
     "torch>=2.0.0",
     "torchvision>=0.15.0",
-    # Backend API
-    "fastapi>=0.104.0",
-    "uvicorn[standard]>=0.24.0",
     "kaggle>=1.5.13",
-    "python-multipart>=0.0.6",
-    "pydantic>=2.0.0",
+    "uvicorn[standard]>=0.24.0",
     "aiofiles>=23.0.0",
-    "python-dotenv>=1.0.0",
-    "httpx>=0.24.0",
-    "pywrangler>=0.0.2",
 ]
-
-[project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
