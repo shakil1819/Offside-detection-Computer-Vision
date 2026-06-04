@@ -29,7 +29,6 @@ dependencies = [
     "pydantic>=2.0.0",
     "python-multipart>=0.0.6",
     "python-dotenv>=1.0.0",
-    "pywrangler>=0.0.2",
 ]
 
 [project.optional-dependencies]
@@ -72,6 +71,7 @@ ignore = ["E501"]
 
 [dependency-groups]
 dev = [
+    "pywrangler>=0.0.2",
     "workers-py",
     "workers-runtime-sdk",
 ]
