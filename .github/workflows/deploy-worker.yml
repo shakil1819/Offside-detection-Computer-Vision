@@ -24,7 +24,9 @@ jobs:
         run: uv python install 3.12
 
       - name: Install pywrangler + project deps
-        run: uv sync
+        run: |
+          uv lock
+          uv sync
 
       - name: Deploy via pywrangler
         env:
