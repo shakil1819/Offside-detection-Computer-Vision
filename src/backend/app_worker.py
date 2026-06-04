@@ -16,7 +16,8 @@ import base64
 from datetime import datetime
 from typing import Optional
 
-import httpx
+import js
+from pyodide.ffi import to_js as _to_js
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
@@ -82,15 +83,25 @@ async def kv_delete(env, key: str) -> None:
 
 
 # ---------------------------------------------------------------------------
-# HTTP helpers (httpx — officially supported in Cloudflare Workers Python)
+# HTTP helpers using js.fetch (Cloudflare Workers native — zero bundle cost)
 # ---------------------------------------------------------------------------
 
 
+def _js_init(opts: dict):
+    """Convert Python dict to JS RequestInit object."""
+    return _to_js(opts, dict_converter=js.Object.fromEntries)
+
+
 async def _fetch(url: str, method: str = "GET", headers: dict = None, body=None) -> tuple[int, str]:
-    """Simple async HTTP call via httpx."""
-    async with httpx.AsyncClient(timeout=60) as client:
-        resp = await client.request(method, url, headers=headers or {}, content=body)
-    return resp.status_code, resp.text
+    """Async HTTP call via Workers-native js.fetch."""
+    opts: dict = {"method": method}
+    if headers:
+        opts["headers"] = headers
+    if body is not None:
+        opts["body"] = body
+    response = await js.fetch(url, _js_init(opts))
+    text = await response.text()
+    return response.status, text
 
 
 async def _fetch_multipart(
@@ -101,11 +112,21 @@ async def _fetch_multipart(
     filename: str,
     headers: dict = None,
 ) -> tuple[int, str]:
-    """POST multipart/form-data via httpx."""
-    files = {file_field: (filename, file_data, "application/octet-stream")}
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(url, headers=headers or {}, data=fields, files=files)
-    return resp.status_code, resp.text
+    """POST multipart/form-data using js.FormData + js.Blob."""
+    form = js.FormData.new()
+    for k, v in fields.items():
+        form.append(k, str(v))
+    blob = js.Blob.new(
+        _to_js([bytearray(file_data)]),
+        _js_init({"type": "application/octet-stream"}),
+    )
+    form.append(file_field, blob, filename)
+    opts: dict = {"method": "POST", "body": form}
+    if headers:
+        opts["headers"] = headers
+    response = await js.fetch(url, _js_init(opts))
+    text = await response.text()
+    return response.status, text
 
 
 # ---------------------------------------------------------------------------
@@ -146,27 +167,34 @@ async def kaggle_push_dataset_version(
     url = f"{KAGGLE_API_BASE}/datasets/{username}/{dataset_name}/versions"
 
     # Push video + current_job.json together as multipart
-    async with httpx.AsyncClient(timeout=120) as client:
-        resp = await client.post(
-            url,
-            headers=headers,
-            data={"versionNotes": f"Job {job_id[:8]} - {incident_type}", "deletePreviousVersions": "false", "convertToCsv": "false"},
-            files=[
-                ("file", (video_filename, video_bytes, "application/octet-stream")),
-                ("file", ("current_job.json", json.dumps(current_job).encode(), "application/json")),
-            ],
-        )
+    status, text = await _fetch_multipart(
+        url=url,
+        fields={"versionNotes": f"Job {job_id[:8]} - {incident_type}", "deletePreviousVersions": "false", "convertToCsv": "false"},
+        file_data=video_bytes,
+        file_field="file",
+        filename=video_filename,
+        headers=headers,
+    )
 
-    if resp.status_code in (200, 201):
+    if status in (200, 201):
+        # Also push current_job.json
+        await _fetch_multipart(
+            url=url,
+            fields={"versionNotes": f"Job config {job_id[:8]}", "deletePreviousVersions": "false", "convertToCsv": "false"},
+            file_data=json.dumps(current_job).encode(),
+            file_field="file",
+            filename="current_job.json",
+            headers=headers,
+        )
         return True, f"Dataset version created for job {job_id[:8]}"
 
-    if resp.status_code == 404:
+    if status == 404:
         return await kaggle_create_dataset(
             username, kaggle_key, dataset_name, job_id,
             video_bytes, video_filename, incident_type, frame_number,
         )
 
-    return False, f"Dataset push failed [{resp.status_code}]: {resp.text[:300]}"
+    return False, f"Dataset push failed [{status}]: {text[:300]}"
 
 
 async def kaggle_create_dataset(

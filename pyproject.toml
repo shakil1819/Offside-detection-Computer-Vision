@@ -24,11 +24,11 @@ classifiers = [
 
 dependencies = [
     # Worker-compatible packages only (pywrangler bundles these into Pyodide)
+    # NOTE: httpx removed — use js.fetch (native Workers API, zero bundle cost)
+    # NOTE: python-dotenv removed — Worker secrets injected via env bindings, not .env
     "fastapi>=0.104.0",
-    "httpx>=0.24.0",
     "pydantic>=2.0.0",
     "python-multipart>=0.0.6",
-    "python-dotenv>=1.0.0",
 ]
 
 [project.optional-dependencies]
