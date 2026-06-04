@@ -1,0 +1,10 @@
+name = "athletic-intelligence-api"
+main = "src/backend/worker.py"
+base_dir = "src/backend"
+compatibility_date = "2024-12-16"
+compatibility_flags = ["python_workers"]
+
+[[kv_namespaces]]
+binding = "JOB_STATE"
+id = "18aae45fd73b47ac9ca8672c2f417bc5"
+preview_id = "d7d6e825c7ba486b8b5371defb28bc80"
