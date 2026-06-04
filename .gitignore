@@ -72,4 +72,4 @@ logs/
 .env.local
 
 # DO NOT IGNORE
-!.docs/
+.docs/
