@@ -33,7 +33,7 @@ dependencies = [
     "torch>=2.0.0",
     "torchvision>=0.15.0",
     # Backend API
-    "fastapi>=0.104.0",
+    "fastapi[standard]>=0.104.0",
     "uvicorn[standard]>=0.24.0",
     "kaggle>=1.5.13",
     "python-multipart>=0.0.6",
@@ -69,3 +69,6 @@ ignore = ["E501"]
 [tool.ruff]
 line-length = 100
 target-version = "py312"
+
+[tool.fastapi]
+entrypoint = "src.backend.main:app"
